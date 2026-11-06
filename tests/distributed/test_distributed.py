@@ -5,7 +5,7 @@ import sys
 import pytest
 import torch
 
-from memlend import LendableRegion
+import memlend
 
 MiB = 1024**2
 needs_two_gpus = pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs 2 GPUs")
@@ -23,16 +23,12 @@ def test_nccl_collectives_inside_loans(communicator):
 
 @needs_two_gpus
 def test_concurrent_loans_on_two_devices():
-    regions = [LendableRegion(512 * MiB, 64 * MiB, device=d) for d in (0, 1)]
-    for r in regions:
-        r.tensor.view(torch.int64).random_()
-    before = [r.tensor.clone() for r in regions]
-    with regions[0].lend() as loan0, regions[1].lend() as loan1:
-        for d, r in enumerate(regions):
-            t = torch.empty(100 * MiB, dtype=torch.uint8, device=d).fill_(d + 1)
-            assert r._lends(t.data_ptr())
-            del t
-    for r, b, loan in zip(regions, before, (loan0, loan1)):
-        assert loan.touched_blocks == [6, 7]
-        view, ref = r.tensor.view(r.num_blocks, -1), b.view(r.num_blocks, -1)
-        assert all(torch.equal(view[i], ref[i]) for i in range(r.num_blocks) if i not in loan.touched_blocks)
+    caches = [memlend.empty(8, 64 * MiB, dtype=torch.uint8, device=d) for d in (0, 1)]
+    for c in caches:
+        c.view(torch.int64).random_()
+    before = [c.clone() for c in caches]
+    with memlend.lend(caches[0]) as loan0, memlend.lend(caches[1]) as loan1:
+        for d in (0, 1):
+            torch.empty(100 * MiB, dtype=torch.uint8, device=d).fill_(d + 1)
+    assert loan0.copied_bytes == loan1.copied_bytes == 100 * MiB
+    assert all(torch.equal(c, b) for c, b in zip(caches, before))

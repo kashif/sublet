@@ -8,7 +8,8 @@ tokens (needs `transformers`). One cycle = what the owner does to make room + th
 - copy-all: copy the region to pinned CPU memory, free it, run the job, reallocate it, copy it back.
 - recompute: free the region, run the job, reallocate it and rebuild the data with forward passes of the model, one
   token per per-token state size of data (a lower bound: the state itself is not written).
-- memlend: lend the region with `empty=` the empty blocks and a lazy backup, then restore the dirty blocks.
+- memlend: lend the region, keeping the blocks that hold data. The first cycle maps the job's memory and is reported
+  apart (first_s); later cycles reuse it.
 
     python benchmark.py --data 0.3 --batches 2 8 --out results.jsonl
 """
@@ -22,7 +23,7 @@ import time
 import torch
 from transformers import AutoModelForCausalLM
 
-from memlend import LendableRegion
+import memlend
 
 GiB, BLOCK, SEQ = 1024**3, 64 * 1024**2, 2048
 dev = torch.device("cuda")
@@ -53,7 +54,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=float, default=0.3, help="share of the region holding data")
     parser.add_argument("--batches", type=int, nargs="+", default=[2, 8])
-    parser.add_argument("--reps", type=int, default=2)
+    parser.add_argument("--reps", type=int, default=3)
     parser.add_argument("--memlend-only", action="store_true")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
@@ -69,9 +70,7 @@ def main():
     runs = list(range(n // 16))
     data_runs = set(random.Random(0).sample(runs, round(len(runs) * args.data)))
     data = [b for b in range(n) if b // 16 in data_runs]
-    empty = [b for b in range(n) if b // 16 not in data_runs]
     tokens = len(data) * BLOCK // state_bytes_per_token
-    host = torch.empty(nbytes, dtype=torch.uint8, pin_memory=True)
 
     def record(**row):
         row.update(gpu=torch.cuda.get_device_name(), region_gib=nbytes / GiB, data_gib=len(data) * BLOCK / GiB)
@@ -80,6 +79,7 @@ def main():
             f.write(json.dumps(row) + "\n")
 
     if not args.memlend_only:
+        host = torch.empty(nbytes, dtype=torch.uint8, pin_memory=True)
         owner = torch.empty(nbytes, dtype=torch.uint8, device=dev)
         for b in args.batches:
             try:
@@ -102,34 +102,35 @@ def main():
 
             record(batch=b, strategy="copy-all", cycle_s=statistics.median(timed(lambda: cycle(False))[0] for _ in range(args.reps)), moved_gib=2 * nbytes / GiB)
             record(batch=b, strategy="recompute", cycle_s=statistics.median(timed(lambda: cycle(True))[0] for _ in range(args.reps)))
-        del owner
+        del owner, host
         torch.cuda.empty_cache()
 
-    region = LendableRegion(nbytes, BLOCK)
-    blocks = region.tensor.view(torch.int64).view(n, -1)
-    blocks.random_()
-    sums = blocks.sum(1)
     for b in args.batches:
+        region = memlend.empty(n, BLOCK, dtype=torch.uint8)  # a new one per job size: each its own steady state
+        blocks = region.view(torch.int64).view(n, -1)
+        blocks.random_()
+        sums = blocks.sum(1)
+        keep = [region[i] for i in data]
         rows = []
         try:
-            for _ in range(args.reps + 1):  # the first is a warm-up
+            for _ in range(args.reps + 1):
+
                 def cycle():
-                    loan = region.lend(empty=empty, backup=host)
-                    try:
-                        with loan:
-                            job(model, update, b)
-                    finally:  # also after an OOM: the dirty blocks' data is in the backup
-                        region.restore(host, loan.dirty_blocks)
+                    with memlend.lend(region, keep=keep) as loan:
+                        job(model, update, b)
                     return loan
 
                 t, loan = timed(cycle)
                 assert torch.equal(blocks.sum(1)[data], sums[data]), "data not restored"
-                rows.append((t, len(loan.dirty_blocks)))
+                rows.append((t, loan.copied_bytes, loan.extra_bytes))
         except torch.OutOfMemoryError:
-            torch.cuda.empty_cache()
             record(batch=b, strategy="memlend", oom=True)
             continue
-        record(batch=b, strategy="memlend", cycle_s=statistics.median(r[0] for r in rows[1:]), moved_gib=2 * rows[-1][1] * BLOCK / GiB)
+        finally:
+            del region, blocks, keep
+            torch.cuda.empty_cache()
+        cycle_s = statistics.median(r[0] for r in rows[1:])
+        record(batch=b, strategy="memlend", first_s=rows[0][0], cycle_s=cycle_s, moved_gib=2 * rows[-1][1] / GiB, extra_gib=rows[-1][2] / GiB)
 
 
 if __name__ == "__main__":

@@ -2,10 +2,12 @@ import pytest
 import torch
 import torch.nn as nn
 
-from memlend import LendableRegion
+import memlend
+from memlend import _compat
+from memlend.lend import _regions
 
 MiB = 1024**2
-BLOCK = 64 * MiB
+ROW = 64 * MiB
 dev = torch.device("cuda")
 
 
@@ -17,27 +19,17 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(pytest.mark.skip(reason="memlend needs the native allocator backend"))
 
 
-def make_region(nbytes, block_size=BLOCK):
-    """Region filled with random bytes, and a copy of that content."""
-    region = LendableRegion(nbytes, block_size)
-    region.tensor.view(torch.int64).random_()
-    return region, region.tensor.clone()
+def make_cache(rows=16, device=dev):
+    """A lendable tensor of `rows` rows of 64 MiB of random bytes, and a copy of it."""
+    cache = memlend.empty(rows, ROW, dtype=torch.uint8, device=device)
+    cache.view(torch.int64).random_()
+    return cache, cache.clone()
 
 
-def changed_blocks(region, before):
-    diff = (region.tensor.view(region.num_blocks, -1) != before.view(region.num_blocks, -1)).any(dim=1)
-    return diff.nonzero().flatten().tolist()
-
-
-def assert_untouched_identical(region, before, loan):
-    """Every block not reported as touched is bit-identical; returns the blocks that changed."""
-    changed = changed_blocks(region, before)
-    assert set(changed) <= set(loan.touched_blocks), f"blocks {changed} changed but touched={loan.touched_blocks}"
-    return changed
-
-
-def in_region(region, t):
-    return region._lends(t.data_ptr())
+def from_cache(cache, t):
+    """Whether `t` was allocated from the memory `cache` lends."""
+    pool = _regions[cache.untyped_storage().data_ptr()].pool
+    return any(s["address"] <= t.data_ptr() < s["address"] + s["total_size"] for s in _compat.segments(pool))
 
 
 class Block(nn.Module):
@@ -62,13 +54,13 @@ def make_model():
     return model, torch.optim.AdamW(model.parameters(), lr=1e-3)
 
 
-def autograd_step(model, update, tokens, region=None):
+def autograd_step(model, update, tokens, cache=None):
     """Forward, backward and an AdamW update; returns the loss."""
     logits = model(tokens[:, :-1])
     loss = nn.functional.cross_entropy(logits.reshape(-1, 1000), tokens[:, 1:].reshape(-1))
     loss.backward()
-    if region is not None:  # gradients are allocated by autograd's backward thread
-        assert all(in_region(region, p.grad) for p in model.parameters())
+    if cache is not None:  # gradients are allocated by autograd's backward thread
+        assert all(from_cache(cache, p.grad) for p in model.parameters())
     update.step()
     update.zero_grad(set_to_none=True)
     return loss.item()

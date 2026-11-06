@@ -53,7 +53,10 @@ def clear_cublas_workspaces():
     torch._C._cuda_clearCublasWorkspaces()
 
 
-def live_blocks(pool, in_segment):
-    """Blocks of `pool` still allocated in the segments whose address satisfies `in_segment`."""
-    segments = pool.snapshot(include_traces=False) if torch_version() >= (2, 11) else pool.snapshot()
-    return [b for s in segments if in_segment(s["address"]) for b in s["blocks"] if b["state"] == "active_allocated"]
+def segments(pool):
+    return pool.snapshot(include_traces=False) if torch_version() >= (2, 11) else pool.snapshot()
+
+
+def live_blocks(pool):
+    """Blocks of `pool` still allocated."""
+    return [b for s in segments(pool) for b in s["blocks"] if b["state"] == "active_allocated"]

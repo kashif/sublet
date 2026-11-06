@@ -1,6 +1,6 @@
-"""Lend a GPU memory region to arbitrary PyTorch code and learn exactly which blocks it used."""
+"""Lend the memory of a GPU tensor to any PyTorch code, and get back the parts you keep."""
 
-from .region import PAGE, LeakError, LendableRegion, Loan
+from .lend import LeakError, Loan, empty, lend
 
-__all__ = ["PAGE", "LeakError", "LendableRegion", "Loan"]
+__all__ = ["LeakError", "Loan", "empty", "lend"]
 __version__ = "0.1.0"
