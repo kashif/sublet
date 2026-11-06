@@ -1,0 +1,25 @@
+NVIDIA H100 80GB HBM3 | torch 2.13.0+cu130 | pinned copies: D2H 7.7 GB/s, H2D 14.2 GB/s
+Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 6581.60it/s]
+[transformers] [1mQwen3Model LOAD REPORT[0m from: Qwen/Qwen3-0.6B
+Key            | Status     |  | 
+---------------+------------+--+-
+lm_head.weight | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+table 60.6 GiB = 31784960 tokens of hidden states, built in 180.9 s
+{"job_gib": 4, "strategy": "do-nothing", "cycle_s": 0.01942743248946499, "d2h_gib": 0, "h2d_gib": 0}
+{"job_gib": 4, "strategy": "copy-all", "cycle_s": 14.334508348008967, "d2h_gib": 60.625, "h2d_gib": 60.625}
+{"job_gib": 4, "strategy": "recompute", "cycle_s": 180.75324005799484, "d2h_gib": 0, "h2d_gib": 0, "recomputed_tokens": 31784960}
+{"job_gib": 16, "strategy": "do-nothing", "cycle_s": 0.07818273700831924, "d2h_gib": 0, "h2d_gib": 0}
+{"job_gib": 16, "strategy": "copy-all", "cycle_s": 14.551584970991826, "d2h_gib": 60.625, "h2d_gib": 60.625}
+[W1106 16:50:22.231303846 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 274923520, total: 85019590656).
+[W1106 16:50:22.231467069 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 536870912 bytes (free: 274923520, total: 85019590656).
+{"job_gib": 32, "strategy": "do-nothing", "cycle_s": null, "oom": true, "d2h_gib": 0, "h2d_gib": 0}
+{"job_gib": 32, "strategy": "copy-all", "cycle_s": 14.874629764992278, "d2h_gib": 60.625, "h2d_gib": 60.625}
+{"job_gib": 4, "strategy": "memlend-eager", "cycle_s": 9.800494747512857, "d2h_gib": 60.625, "h2d_gib": 3.75, "fallback_gib": 0.0}
+{"job_gib": 4, "strategy": "memlend-lazy", "cycle_s": 0.879031517994008, "d2h_gib": 3.75, "h2d_gib": 3.75, "fallback_gib": 0.0}
+{"job_gib": 16, "strategy": "memlend-eager", "cycle_s": 10.755036796996137, "d2h_gib": 60.625, "h2d_gib": 16.3125, "fallback_gib": 0.0}
+{"job_gib": 16, "strategy": "memlend-lazy", "cycle_s": 3.8197765265067574, "d2h_gib": 16.3125, "h2d_gib": 16.3125, "fallback_gib": 0.0}
+{"job_gib": 32, "strategy": "memlend-eager", "cycle_s": 12.007065404497553, "d2h_gib": 60.625, "h2d_gib": 32.625, "fallback_gib": 0.0}
+{"job_gib": 32, "strategy": "memlend-lazy", "cycle_s": 7.644060792503296, "d2h_gib": 32.625, "h2d_gib": 32.625, "fallback_gib": 0.0}

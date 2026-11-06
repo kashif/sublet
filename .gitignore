@@ -1,0 +1,13 @@
+envs/
+build/
+_ref/
+experiments/
+prototype/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.so
+tests/logs/
+matrix/logs/
+matrix/early/

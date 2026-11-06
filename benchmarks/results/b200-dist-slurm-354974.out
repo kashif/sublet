@@ -1,0 +1,14 @@
+name
+NVIDIA B200
+NVIDIA B200
+== nccl_loan lazy 16:56:30
+exit=0
+== nccl_loan eager 16:56:46
+exit=0
+== pytest tests/distributed 16:57:03
+=========================== short test summary info ============================
+PASSED tests/distributed/test_distributed.py::test_nccl_collectives_inside_loans[lazy]
+PASSED tests/distributed/test_distributed.py::test_nccl_collectives_inside_loans[eager]
+PASSED tests/distributed/test_distributed.py::test_concurrent_loans_on_two_devices
+3 passed in 33.50s
+== done 16:57:44

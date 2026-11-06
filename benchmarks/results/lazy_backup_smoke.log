@@ -1,0 +1,35 @@
+NVIDIA H100 80GB HBM3 | torch 2.13.0+cu130 | pinned copies: D2H 7.0 GB/s, H2D 14.2 GB/s
+region 1.6 GiB (26 blocks), two pinned buffers ready in 0.6 s
+{"cycle_s": 0.08731719900970347, "backup_s": 0.0, "loan_s": 0.08731719900970347, "restore_s": 0.0, "copied_out_blocks": 0, "dirty_blocks": 26, "touched_blocks": 26, "batch": 2, "scenario": "all-valuable", "strategy": "none", "copied_out_gib": 0.0, "restored_gib": 1.625}
+{"cycle_s": 0.4649196669925004, "backup_s": 0.25186627500806935, "loan_s": 0.08749447201262228, "restore_s": 0.1255589199718088, "copied_out_blocks": 26, "dirty_blocks": 26, "touched_blocks": 26, "batch": 2, "scenario": "all-valuable", "strategy": "eager-all", "copied_out_gib": 1.625, "restored_gib": 1.625}
+{"cycle_s": 0.46504561000620015, "backup_s": 0.2513299850106705, "loan_s": 0.08819847600534558, "restore_s": 0.12551714899018407, "copied_out_blocks": 26, "dirty_blocks": 26, "touched_blocks": 26, "batch": 2, "scenario": "all-valuable", "strategy": "eager-live", "copied_out_gib": 1.625, "restored_gib": 1.625}
+{"cycle_s": 0.4707667400070932, "backup_s": 0.0, "loan_s": 0.34516153900767677, "restore_s": 0.1256052009994164, "copied_out_blocks": 26, "dirty_blocks": 26, "touched_blocks": 26, "batch": 2, "scenario": "all-valuable", "strategy": "lazy-host", "copied_out_gib": 1.625, "restored_gib": 1.625}
+{"cycle_s": 0.45151005100342445, "backup_s": 0.0, "loan_s": 0.32603571299114265, "restore_s": 0.1254743380122818, "copied_out_blocks": 26, "dirty_blocks": 26, "touched_blocks": 26, "batch": 2, "scenario": "all-valuable", "strategy": "lazy-stream", "copied_out_gib": 1.625, "restored_gib": 1.625}
+{"cycle_s": 0.4498361400037538, "backup_s": 0.0, "loan_s": 0.3242992899904493, "restore_s": 0.1255368500133045, "copied_out_blocks": 26, "dirty_blocks": 26, "touched_blocks": 26, "batch": 2, "scenario": "all-valuable", "strategy": "lazy-stream+prefetch-8", "copied_out_gib": 1.625, "restored_gib": 1.625}
+{"cycle_s": 0.44989424000959843, "backup_s": 0.0, "loan_s": 0.3243814510060474, "restore_s": 0.125512789003551, "copied_out_blocks": 26, "dirty_blocks": 26, "touched_blocks": 26, "batch": 2, "scenario": "all-valuable", "strategy": "lazy-stream+prefetch-32", "copied_out_gib": 1.625, "restored_gib": 1.625}
+{"cycle_s": 0.08536914299475029, "backup_s": 0.0, "loan_s": 0.08536914299475029, "restore_s": 0.0, "copied_out_blocks": 0, "dirty_blocks": 13, "touched_blocks": 26, "batch": 2, "scenario": "half-empty", "strategy": "none", "copied_out_gib": 0.0, "restored_gib": 0.8125}
+{"cycle_s": 0.4012499409727752, "backup_s": 0.2512735439813696, "loan_s": 0.08577484000124969, "restore_s": 0.06420155699015595, "copied_out_blocks": 26, "dirty_blocks": 13, "touched_blocks": 26, "batch": 2, "scenario": "half-empty", "strategy": "eager-all", "copied_out_gib": 1.625, "restored_gib": 0.8125}
+{"cycle_s": 0.27589783497387543, "backup_s": 0.12663455097936094, "loan_s": 0.08507741699577309, "restore_s": 0.0641858669987414, "copied_out_blocks": 13, "dirty_blocks": 13, "touched_blocks": 26, "batch": 2, "scenario": "half-empty", "strategy": "eager-live", "copied_out_gib": 0.8125, "restored_gib": 0.8125}
+{"cycle_s": 0.279794428992318, "backup_s": 0.0, "loan_s": 0.2155965520069003, "restore_s": 0.06419787698541768, "copied_out_blocks": 13, "dirty_blocks": 13, "touched_blocks": 26, "batch": 2, "scenario": "half-empty", "strategy": "lazy-host", "copied_out_gib": 0.8125, "restored_gib": 0.8125}
+{"cycle_s": 0.26293812700896524, "backup_s": 0.0, "loan_s": 0.1987113089999184, "restore_s": 0.06422681800904684, "copied_out_blocks": 13, "dirty_blocks": 13, "touched_blocks": 26, "batch": 2, "scenario": "half-empty", "strategy": "lazy-stream", "copied_out_gib": 0.8125, "restored_gib": 0.8125}
+{"cycle_s": 0.2616660729981959, "backup_s": 0.0, "loan_s": 0.19744215498212725, "restore_s": 0.06422391801606864, "copied_out_blocks": 13, "dirty_blocks": 13, "touched_blocks": 26, "batch": 2, "scenario": "half-empty", "strategy": "lazy-stream+prefetch-8", "copied_out_gib": 0.8125, "restored_gib": 0.8125}
+{"cycle_s": 0.26159483002265915, "backup_s": 0.0, "loan_s": 0.1973788930044975, "restore_s": 0.06421593701816164, "copied_out_blocks": 13, "dirty_blocks": 13, "touched_blocks": 26, "batch": 2, "scenario": "half-empty", "strategy": "lazy-stream+prefetch-32", "copied_out_gib": 0.8125, "restored_gib": 0.8125}
+Traceback (most recent call last):
+  File "/fsx/qgallouedec/memlend/benchmarks/bench_lazy_backup.py", line 104, in <module>
+    main()
+    ~~~~^^
+  File "/fsx/qgallouedec/memlend/benchmarks/bench_lazy_backup.py", line 77, in main
+    loan_s, loan = sync_time(lambda: _loan(region, kwargs, model, opt, batch))
+                   ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/fsx/qgallouedec/memlend/benchmarks/common.py", line 16, in sync_time
+    out = fn()
+  File "/fsx/qgallouedec/memlend/benchmarks/bench_lazy_backup.py", line 77, in <lambda>
+    loan_s, loan = sync_time(lambda: _loan(region, kwargs, model, opt, batch))
+                                     ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/fsx/qgallouedec/memlend/benchmarks/bench_lazy_backup.py", line 98, in _loan
+    with region.lend(**kwargs) as loan:
+         ~~~~~~~~~~~^^^^^^^^^^
+  File "/fsx/qgallouedec/memlend/src/memlend/region.py", line 180, in __enter__
+    _lib.memlend_set_order(region._handle, (ctypes.c_int64 * region.num_blocks)(*order))
+                                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+IndexError: invalid index

@@ -1,0 +1,73 @@
+...                                                                      [100%]
+==================================== PASSES ====================================
+___________________ test_nccl_collectives_inside_loans[lazy] ___________________
+----------------------------- Captured stdout call -----------------------------
+[rank 1] start (lazy communicator)
+[rank 0] start (lazy communicator)
+[rank 1] all_reduce
+[rank 0] all_reduce
+[rank 0] all_gather[rank 1] all_gather
+
+[rank 1] broadcast
+[rank 0] broadcast
+[rank 1] loan 0 (lazy communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +1094 MiB
+[rank 0] loan 0 (lazy communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +1094 MiB
+[rank 1] all_reduce
+[rank 0] all_reduce
+[rank 1] all_gather
+[rank 0] all_gather
+[rank 1] broadcast
+[rank 0] broadcast
+[rank 0] loan 1 (lazy communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +0 MiB
+[rank 1] loan 1 (lazy communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +0 MiB
+[rank 0] all_reduce
+[rank 1] all_reduce
+[rank 0] all_gather
+[rank 1] all_gather
+[rank 0] broadcast
+[rank 1] broadcast
+[rank 0] loan 2 (lazy communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +0 MiB
+[rank 1] loan 2 (lazy communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +0 MiB
+[rank 1] graph-captured all_reduce: captured before, replayed in loan ok, after loan ok; captured and replayed in loan ok[rank 0] graph-captured all_reduce: captured before, replayed in loan ok, after loan ok; captured and replayed in loan ok
+
+[rank 1] PASS[rank 0] PASS
+
+
+__________________ test_nccl_collectives_inside_loans[eager] ___________________
+----------------------------- Captured stdout call -----------------------------
+[rank 0] start (eager communicator)
+[rank 1] start (eager communicator)
+[rank 0] all_reduce
+[rank 1] all_reduce
+[rank 0] all_gather
+[rank 1] all_gather
+[rank 0] broadcast
+[rank 1] broadcast
+[rank 0] loan 0 (eager communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +4 MiB
+[rank 1] loan 0 (eager communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +4 MiB
+[rank 0] all_reduce
+[rank 1] all_reduce
+[rank 0] all_gather
+[rank 1] all_gather
+[rank 0] broadcast
+[rank 1] broadcast
+[rank 0] loan 1 (eager communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +0 MiB
+[rank 1] loan 1 (eager communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +0 MiB
+[rank 0] all_reduce
+[rank 1] all_reduce
+[rank 0] all_gather
+[rank 1] all_gather
+[rank 0] broadcast
+[rank 1] broadcast
+[rank 0] loan 2 (eager communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +0 MiB
+[rank 1] loan 2 (eager communicator): results ok, untouched blocks identical, touched 6 blocks, free GPU memory outside the region changed by +0 MiB
+[rank 1] graph-captured all_reduce: captured before, replayed in loan ok, after loan ok; captured and replayed in loan ok[rank 0] graph-captured all_reduce: captured before, replayed in loan ok, after loan ok; captured and replayed in loan ok
+
+[rank 0] PASS[rank 1] PASS
+
+
+=========================== short test summary info ============================
+PASSED tests/distributed/test_distributed.py::test_nccl_collectives_inside_loans[lazy]
+PASSED tests/distributed/test_distributed.py::test_nccl_collectives_inside_loans[eager]
+PASSED tests/distributed/test_distributed.py::test_concurrent_loans_on_two_devices
+3 passed in 33.50s

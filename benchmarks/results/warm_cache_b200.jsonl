@@ -1,0 +1,13 @@
+{"job_gib": 4, "strategy": "do-nothing", "cycle_s": 0.012521524498879444, "d2h_gib": 0, "h2d_gib": 0}
+{"job_gib": 4, "strategy": "copy-all", "cycle_s": 6.303176514506049, "d2h_gib": 159.6875, "h2d_gib": 159.6875}
+{"job_gib": 4, "strategy": "recompute", "cycle_s": 318.6885356010025, "d2h_gib": 0, "h2d_gib": 0, "recomputed_tokens": 83722240}
+{"job_gib": 16, "strategy": "do-nothing", "cycle_s": 0.045554977499705274, "d2h_gib": 0, "h2d_gib": 0}
+{"job_gib": 16, "strategy": "copy-all", "cycle_s": 6.43065344599745, "d2h_gib": 159.6875, "h2d_gib": 159.6875}
+{"job_gib": 32, "strategy": "do-nothing", "cycle_s": null, "oom": true, "d2h_gib": 0, "h2d_gib": 0}
+{"job_gib": 32, "strategy": "copy-all", "cycle_s": 6.549060293509683, "d2h_gib": 159.6875, "h2d_gib": 159.6875}
+{"job_gib": 4, "strategy": "memlend-eager", "cycle_s": 3.0867200685024727, "d2h_gib": 159.6875, "h2d_gib": 3.75, "fallback_gib": 0.0}
+{"job_gib": 4, "strategy": "memlend-lazy", "cycle_s": 0.14589367950247834, "d2h_gib": 3.75, "h2d_gib": 3.75, "fallback_gib": 0.0}
+{"job_gib": 16, "strategy": "memlend-eager", "cycle_s": 3.3444932359925588, "d2h_gib": 159.6875, "h2d_gib": 16.3125, "fallback_gib": 0.0}
+{"job_gib": 16, "strategy": "memlend-lazy", "cycle_s": 0.6306966380070662, "d2h_gib": 16.3125, "h2d_gib": 16.3125, "fallback_gib": 0.0}
+{"job_gib": 32, "strategy": "memlend-eager", "cycle_s": 3.6823687514988706, "d2h_gib": 159.6875, "h2d_gib": 32.625, "fallback_gib": 0.0}
+{"job_gib": 32, "strategy": "memlend-lazy", "cycle_s": 1.2605997985010617, "d2h_gib": 32.625, "h2d_gib": 32.625, "fallback_gib": 0.0}
