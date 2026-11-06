@@ -60,8 +60,8 @@ out, 14 GB/s in; B200: 57 and 55 GB/s), which is why copying 35 GiB loses to rec
 
 ## Compatibility
 
-Tested with torch 2.8 to 2.15 on Python 3.10 to 3.13 (H100; B200 on Python 3.12), with the default allocator settings,
-`max_split_size_mb`, and `expandable_segments:True` from torch 2.10 (2.8 and 2.9 reject memory pools under it). Other
+Tested with torch 2.8 to 2.15 on Python 3.10 to 3.13 (B200, two of them for NCCL; H100 on torch 2.8, 2.12 and 2.13),
+with the default allocator settings, and with `max_split_size_mb` and `expandable_segments:True` on torch 2.15. Other
 torch versions and `backend:cudaMallocAsync` are refused; `MEMLEND_SKIP_TORCH_CHECK=1` bypasses the version check.
 
 ## Limitations
