@@ -13,7 +13,7 @@ import torch.distributed as dist
 
 from memlend import LeakError, LendableRegion
 
-MiB = 1 << 20
+MiB = 1024**2
 mode = sys.argv[1]
 local_rank = int(os.environ["LOCAL_RANK"])
 torch.cuda.set_device(local_rank)
@@ -79,7 +79,7 @@ for i in range(3):
     region.tensor.copy_(before)
 # Collectives captured in CUDA graphs: one captured before any loan and replayed inside and after loans, one captured
 # and replayed inside a loan. NCCL may register graph-captured buffers; the region's physical pages never change.
-n = 1 << 20
+n = 1024**2
 static = torch.ones(n, device=dev)
 side = torch.cuda.Stream()
 side.wait_stream(torch.cuda.current_stream())

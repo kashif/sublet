@@ -1,8 +1,9 @@
 // Segment allocator behind the MemPool used during a loan (see region.py and DESIGN.md).
 //
-// The caching allocator asks for whole segments (multiples of 2 MiB). memlend_malloc serves each one from a
-// contiguous run of free 2 MiB pages of the region lent on that device, chosen in lend order, and falls back to
-// cuMemAlloc (ordinary free GPU memory) when no run is long enough. Every block a served run overlaps is marked touched.
+// The caching allocator asks for whole segments (multiples of 2 MiB). memlend_malloc serves each one from the run of
+// contiguous unlent 2 MiB pages of the region lent on that device that costs least: the number of distinct blocks in
+// it that hold data and were not touched yet in this loan (empty blocks and already-touched blocks are free). Ties go to
+// the far end of the region. It falls back to cuMemAlloc (ordinary free GPU memory) only when no run is long enough.
 //
 // The CUDA driver is opened at runtime (it is already loaded by PyTorch), so building needs only a C compiler.
 
@@ -46,28 +47,21 @@ int memlend_init(void) {
   return 0;
 }
 
-#define PAGE (2ull << 20)
+#define PAGE (2ull * 1024 * 1024)
 #define MAX_DEVICES 64
 
 typedef struct Region {
   int device;
   CUdeviceptr base;
   int64_t npages, pages_per_block;
-  int32_t* order;    // pages in lend order
-  int64_t* block_order;  // blocks in lend order
-  uint8_t* used;     // page currently backs a segment of a pool
-  uint8_t* touched;  // per block: handed out during the current loan
-  uint8_t* active;   // scratch for the run search
-  int64_t* end;      // scratch: for an active run [a, b], end[a] = b and end[b] = a
-  // Lazy backup: before a block is first handed out, it is copied to `backup` on `copy_stream`, and the stream that
-  // asked for the memory waits for that copy (`sync_copies`: the host waits instead). `prefetch` more blocks, next in
-  // lend order, are kept copied ahead of demand. Blocks marked `skip` hold nothing and are never copied.
+  uint8_t* used;         // page currently backs a segment of a pool
+  uint8_t* skip;         // per block: declared empty for this loan (holds nothing, never backed up)
+  uint8_t* touched;      // per block: handed out during the current loan
+  int64_t* cost_prefix;  // scratch: number of costly blocks among the first b
+  // Lazy backup: before a non-empty block is first handed out, it is copied to `backup` on `copy_stream`, and every
+  // stream that asks for memory in it waits for that copy (its event).
   char* backup;
-  int sync_copies;
-  int64_t prefetch, cursor, ahead;
-  uint8_t* skip;
-  uint8_t* saved;  // copy-out enqueued during this loan
-  CUevent* events;  // per block: recorded after its copy-out
+  CUevent* events;
   CUstream copy_stream;
   int dropped;  // the owner is gone; destroy once no page is used
   struct Region* next;
@@ -89,16 +83,11 @@ Region* memlend_create(int device, size_t nbytes, int64_t block_size) {
   r->device = device;
   r->npages = nbytes / PAGE;
   r->pages_per_block = block_size / PAGE;
-  r->order = malloc(r->npages * sizeof(int32_t));
-  r->block_order = malloc(r->npages / r->pages_per_block * sizeof(int64_t));
-  r->skip = calloc(r->npages / r->pages_per_block, 1);
-  r->saved = calloc(r->npages / r->pages_per_block, 1);
+  int64_t nblocks = r->npages / r->pages_per_block;
   r->used = calloc(r->npages, 1);
-  r->touched = calloc(r->npages / r->pages_per_block, 1);
-  r->active = malloc(r->npages);
-  r->end = malloc(r->npages * sizeof(int64_t));
-  for (int64_t i = 0; i < r->npages; i++) r->order[i] = (int32_t)(r->npages - 1 - i);  // far end first
-  for (int64_t b = 0; b < r->npages / r->pages_per_block; b++) r->block_order[b] = r->npages / r->pages_per_block - 1 - b;
+  r->skip = calloc(nblocks, 1);
+  r->touched = calloc(nblocks, 1);
+  r->cost_prefix = malloc((nblocks + 1) * sizeof(int64_t));
   pthread_mutex_lock(&mu);
   r->next = regions;
   regions = r;
@@ -122,8 +111,7 @@ static void destroy(Region* r) {
   if (r->copy_stream) cuStreamDestroy(r->copy_stream);
   if (r->events)
     for (int64_t b = 0; b < r->npages / r->pages_per_block; b++) cuEventDestroy(r->events[b]);
-  free(r->events), free(r->block_order), free(r->skip), free(r->saved);
-  free(r->order), free(r->used), free(r->touched), free(r->active), free(r->end), free(r);
+  free(r->events), free(r->used), free(r->skip), free(r->touched), free(r->cost_prefix), free(r);
 }
 
 // The owner dropped the region. If leaked borrower segments still live in it, free it when the last one goes.
@@ -138,53 +126,20 @@ void memlend_destroy(Region* r) {
 
 CUdeviceptr memlend_base(Region* r) { return r->base; }
 
-// block_order: every block index once, first lent first.
-void memlend_set_order(Region* r, const int64_t* block_order) {
-  pthread_mutex_lock(&mu);
-  int64_t i = 0;
-  for (int64_t b = 0; b < r->npages / r->pages_per_block; b++) {
-    r->block_order[b] = block_order[b];
-    for (int64_t p = 0; p < r->pages_per_block; p++) r->order[i++] = (int32_t)(block_order[b] * r->pages_per_block + p);
-  }
-  pthread_mutex_unlock(&mu);
-}
-
-static void copy_out(Region* r, int64_t b) {
-  size_t bs = r->pages_per_block * PAGE;
-  cuMemcpyDtoHAsync(r->backup + b * bs, r->base + b * bs, bs, r->copy_stream);
-  cuEventRecord(r->events[b], r->copy_stream);
-  r->saved[b] = 1;
-}
-
-static void prefetch(Region* r) {
-  int64_t nblocks = r->npages / r->pages_per_block;
-  while (r->ahead < r->prefetch && r->cursor < nblocks) {
-    int64_t b = r->block_order[r->cursor++];
-    if (r->skip[b] || r->saved[b] || r->touched[b]) continue;
-    copy_out(r, b);
-    r->ahead++;
-  }
-}
-
 // Start a loan of r on its device. backup (pinned host, optional) enables lazy backup; skip (one byte per block,
 // optional) marks blocks that hold nothing.
-void memlend_begin(Region* r, char* backup, const uint8_t* skip, int sync_copies, int64_t prefetch_blocks) {
+void memlend_begin(Region* r, char* backup, const uint8_t* skip) {
   int64_t nblocks = r->npages / r->pages_per_block;
   pthread_mutex_lock(&mu);
   memset(r->touched, 0, nblocks);
-  memset(r->saved, 0, nblocks);
   if (skip) memcpy(r->skip, skip, nblocks);
   else memset(r->skip, 0, nblocks);
   r->backup = backup;
-  r->sync_copies = sync_copies;
-  r->prefetch = prefetch_blocks;
-  r->cursor = r->ahead = 0;
   if (backup && !r->copy_stream) {
     cuStreamCreate(&r->copy_stream, 1 /* CU_STREAM_NON_BLOCKING */);
     r->events = malloc(nblocks * sizeof(CUevent));
     for (int64_t b = 0; b < nblocks; b++) cuEventCreate(&r->events[b], 2 /* CU_EVENT_DISABLE_TIMING */);
   }
-  if (backup) prefetch(r);
   fallback_peak[r->device] = fallback_bytes[r->device];
   lender[r->device] = r;
   pthread_mutex_unlock(&mu);
@@ -197,46 +152,45 @@ void memlend_end(Region* r) {
 }
 
 void memlend_touched(Region* r, uint8_t* out) { memcpy(out, r->touched, r->npages / r->pages_per_block); }
-void memlend_saved(Region* r, uint8_t* out) { memcpy(out, r->saved, r->npages / r->pages_per_block); }
 int64_t memlend_fallback_peak(int device) { return fallback_peak[device]; }
 
-// First page of a window of k free pages within the shortest lend-order prefix that has one, or -1.
-static int64_t find_run(Region* r, int64_t k) {
-  memset(r->active, 0, r->npages);
-  for (int64_t i = 0; i < r->npages; i++) {
-    int64_t p = r->order[i];
-    if (r->used[p]) continue;
-    int64_t a = (p > 0 && r->active[p - 1]) ? r->end[p - 1] : p;
-    int64_t b = (p + 1 < r->npages && r->active[p + 1]) ? r->end[p + 1] : p;
-    r->active[p] = 1;
-    r->end[a] = b;
-    r->end[b] = a;
-    // Both sides were shorter than k before p joined them, so any k-window of [a, b] contains p.
-    if (b - a + 1 >= k) return a > p - k + 1 ? a : p - k + 1;
+// First page of the run of n contiguous unlent pages with the fewest distinct blocks that hold data and were not
+// touched yet in this loan; among equal costs, the one nearest the far end. -1 if no n unlent pages are contiguous.
+static int64_t find_window(Region* r, int64_t n) {
+  int64_t ppb = r->pages_per_block, nblocks = r->npages / ppb;
+  r->cost_prefix[0] = 0;
+  for (int64_t b = 0; b < nblocks; b++) r->cost_prefix[b + 1] = r->cost_prefix[b] + !(r->skip[b] || r->touched[b]);
+  int64_t best = -1, best_cost = INT64_MAX, free_len = 0;
+  for (int64_t p = r->npages - 1; p >= 0; p--) {  // from the far end, so the first window of a cost is the farthest
+    free_len = r->used[p] ? 0 : free_len + 1;     // unlent pages from p upward
+    if (free_len < n) continue;
+    int64_t cost = r->cost_prefix[(p + n - 1) / ppb + 1] - r->cost_prefix[p / ppb];
+    if (cost < best_cost) {
+      best = p, best_cost = cost;
+      if (cost == 0) break;
+    }
   }
-  return -1;
+  return best;
 }
 
 void* memlend_malloc(ssize_t size, int device, void* stream) {
   int64_t k = (size + PAGE - 1) / PAGE;
   pthread_mutex_lock(&mu);
   Region* r = lender[device];
-  int64_t start = r ? find_run(r, k) : -1;
+  int64_t start = r ? find_window(r, k) : -1;
   if (start >= 0) {
     memset(r->used + start, 1, k);
-    int wait_host = 0;
     for (int64_t b = start / r->pages_per_block; b <= (start + k - 1) / r->pages_per_block; b++) {
-      if (!r->touched[b] && r->saved[b]) r->ahead--;  // a prefetched block is now in use
+      int first = !r->touched[b];
       r->touched[b] = 1;
       if (!r->backup || r->skip[b]) continue;
-      if (!r->saved[b]) copy_out(r, b);
-      if (r->sync_copies)
-        wait_host = 1;
-      else
-        cuStreamWaitEvent((CUstream)stream, r->events[b], 0);  // the borrower's kernels on this stream follow the copy
+      if (first) {
+        size_t bs = r->pages_per_block * PAGE;
+        cuMemcpyDtoHAsync(r->backup + b * bs, r->base + b * bs, bs, r->copy_stream);
+        cuEventRecord(r->events[b], r->copy_stream);
+      }
+      cuStreamWaitEvent((CUstream)stream, r->events[b], 0);  // the borrower's kernels on this stream follow the copy
     }
-    if (wait_host) cuStreamSynchronize(r->copy_stream);
-    if (r->backup) prefetch(r);
     pthread_mutex_unlock(&mu);
     return (void*)(r->base + start * PAGE);
   }

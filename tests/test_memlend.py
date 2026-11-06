@@ -1,55 +1,75 @@
+import subprocess
+import sys
+
 import pytest
 import torch
 
-from memlend import PAGE, LeakError, LendableRegion
+from conftest import BLOCK, PPB, MiB, assert_untouched_identical, autograd_step, dev, in_region, make_model, make_region
+from memlend import LeakError, LendableRegion
 
-from helpers import (
-    BLOCK,
-    MiB,
-    assert_untouched_identical,
-    changed_blocks,
-    dev,
-    in_region,
-    make_model_and_optimizer,
-    make_region,
-    train_step,
-)
+
+def page_of(region, t):
+    return (t.data_ptr() - region.tensor.data_ptr()) // (2 * MiB)
 
 
 def test_untouched_blocks_bit_identical_and_touched_reported():
     region, before = make_region(1024 * MiB)  # 16 blocks of 32 pages
 
     def borrower():
-        # Segments the caching allocator asks for: 100 MiB, 20 MiB (for 3 MiB), 2 MiB (small pool), 40 MiB.
-        # Served from the far end: pages 431..511 => blocks 13, 14, 15.
-        tensors = [torch.empty(n, dtype=torch.uint8, device=dev) for n in (100 * MiB, 3 * MiB, 500_000, 40 * MiB)]
-        for i, t in enumerate(tensors):
+        # Segments requested: 100 MiB, 20 MiB (for 3 MiB), 2 MiB (small pool), 40 MiB. From the far end: pages 431..511.
+        kept = [torch.empty(n, dtype=torch.uint8, device=dev) for n in (100 * MiB, 3 * MiB, 500_000, 40 * MiB)]
+        for i, t in enumerate(kept):
             assert in_region(region, t)
             t.fill_(i + 1)
 
     with region.lend() as loan:
         borrower()
-    assert loan.touched_blocks == [13, 14, 15]
-    assert loan.fallback_peak_bytes == 0
+    assert loan.touched_blocks == [13, 14, 15] and loan.fallback_peak_bytes == 0
     assert assert_untouched_identical(region, before, loan) == [13, 14, 15]
 
 
-def test_lend_order():
+def cheapest_run(num_blocks, free_blocks, lent_pages, pages):
+    """Brute force: (cost, first page) of the run of `pages` unlent pages overwriting the fewest data blocks, farthest first."""
+    best = None
+    for start in range(num_blocks * PPB - pages, -1, -1):
+        if not lent_pages.isdisjoint(range(start, start + pages)):
+            continue
+        cost = len(set(range(start // PPB, (start + pages - 1) // PPB + 1)) - free_blocks)
+        if best is None or cost < best[0]:
+            best = (cost, start)
+    return best
+
+
+def test_placement_overwrites_the_fewest_data_blocks():
+    # Empty runs of at most 3 blocks, a request of 4 blocks: some data block must be lent.
     region, before = make_region(1024 * MiB)
-    region.set_lend_order([5, 9, 10, 2])
+    empty = {0, 1, 2, 4, 5, 6, 13, 15}
+    backup = torch.zeros(region.nbytes, dtype=torch.uint8, pin_memory=True)
+    with region.lend(empty=empty, backup=backup) as loan:
+        a = torch.empty(4 * BLOCK, dtype=torch.uint8, device=dev).fill_(1)
+        cost_a, start_a = cheapest_run(16, empty, set(), 4 * PPB)
+        assert page_of(region, a) == start_a
+        lent = set(range(start_a, start_a + 4 * PPB))
+        b = torch.empty(3 * BLOCK, dtype=torch.uint8, device=dev).fill_(2)  # blocks the first run overwrote are free now
+        cost_b, start_b = cheapest_run(16, empty | {p // PPB for p in lent}, lent, 3 * PPB)
+        assert page_of(region, b) == start_b
+        del a, b
+    # Lending empty blocks first, then the far end, would have backed up 2 blocks (12 and 14) for the first request.
+    assert cost_a == 1 and len(loan.dirty_blocks) == cost_a + cost_b
+    region.restore(backup, loan.dirty_blocks)
+    torch.cuda.synchronize()
+    blocks, ref = region.tensor.view(16, -1), before.view(16, -1)
+    assert all(torch.equal(blocks[b], ref[b]) for b in range(16) if b not in empty)
 
-    def borrower():
-        a = torch.empty(64 * MiB, dtype=torch.uint8, device=dev).fill_(1)  # 32 pages: block 5
-        b = torch.empty(128 * MiB, dtype=torch.uint8, device=dev).fill_(2)  # 64 contiguous pages: blocks 9 and 10
-        c = torch.empty(100, dtype=torch.uint8, device=dev).fill_(3)  # one small-pool page: first page of block 2
-        assert a.data_ptr() - region.tensor.data_ptr() == 5 * BLOCK
-        assert b.data_ptr() - region.tensor.data_ptr() == 9 * BLOCK
-        assert c.data_ptr() - region.tensor.data_ptr() == 2 * BLOCK
 
-    with region.lend() as loan:
-        borrower()
-    assert loan.touched_blocks == [2, 5, 9, 10]
-    assert assert_untouched_identical(region, before, loan) == [2, 5, 9, 10]
+def test_single_block_request():
+    region, _ = make_region(1024 * MiB)
+    with region.lend() as loan:  # nothing declared empty: the far end
+        torch.empty(BLOCK, dtype=torch.uint8, device=dev).fill_(1)
+    assert loan.touched_blocks == [15]
+    with region.lend(empty=[5]) as loan:
+        torch.empty(BLOCK, dtype=torch.uint8, device=dev).fill_(1)
+    assert loan.touched_blocks == [5] and loan.dirty_blocks == []
 
 
 def test_borrower_frees_and_reallocates():
@@ -59,141 +79,132 @@ def test_borrower_frees_and_reallocates():
     def borrower():
         live = []
         for _ in range(300):
-            n = int(torch.randint(1, 64 * MiB, (1,), generator=gen))
-            live.append(torch.empty(n, dtype=torch.uint8, device=dev).fill_(7))
-            if len(live) > 6:  # at most ~400 MiB alive at once
+            live.append(torch.empty(int(torch.randint(1, 64 * MiB, (1,), generator=gen)), dtype=torch.uint8, device=dev).fill_(7))
+            if len(live) > 6:
                 live.pop(int(torch.randint(0, len(live), (1,), generator=gen)))
 
     with region.lend() as loan:
         borrower()
-    # Freed memory is reused inside the loan: far fewer blocks than the 300 allocations would need.
-    assert 0 < len(loan.touched_blocks) < region.num_blocks
-    assert loan.fallback_peak_bytes == 0
+    assert 0 < len(loan.touched_blocks) < region.num_blocks  # freed memory is reused within the loan
     assert_untouched_identical(region, before, loan)
 
 
-def test_autograd_training_step_matches_reference():
+def test_borrower_using_autograd_matches_reference():
     tokens = torch.randint(0, 1000, (8, 129), device=dev, generator=torch.Generator(dev).manual_seed(0))
-    ref_model, ref_opt = make_model_and_optimizer()
-    ref_losses = [train_step(ref_model, ref_opt, tokens) for _ in range(3)]
-
-    model, opt = make_model_and_optimizer()
-    losses = [train_step(model, opt, tokens)]  # first step outside: creates the optimizer states
+    ref_model, ref_update = make_model()
+    ref_losses = [autograd_step(ref_model, ref_update, tokens) for _ in range(3)]
+    model, update = make_model()
+    losses = [autograd_step(model, update, tokens)]  # outside a loan: creates the AdamW state
     region, before = make_region(1024 * MiB)
-    with region.lend() as loan:
-        losses.append(train_step(model, opt, tokens, region))
-    with region.lend() as loan2:  # a second loan on the same region
-        losses.append(train_step(model, opt, tokens, region))
-
+    for _ in range(2):
+        with region.lend() as loan:
+            losses.append(autograd_step(model, update, tokens, region))
     assert losses == ref_losses
-    for p, ref_p in zip(model.parameters(), ref_model.parameters()):
-        assert torch.equal(p, ref_p)
-    assert loan.touched_blocks and loan2.touched_blocks
-    assert loan.fallback_peak_bytes == 0 and loan2.fallback_peak_bytes == 0
-    assert_untouched_identical(region, before, loan2)
+    assert all(torch.equal(p, q) for p, q in zip(model.parameters(), ref_model.parameters()))
+    assert loan.touched_blocks and loan.fallback_peak_bytes == 0
+    assert_untouched_identical(region, before, loan)
 
 
 def test_side_streams_and_cublas_workspaces():
     region, before = make_region(1024 * MiB)
     a = torch.randn(1024, 1024, device=dev)
-    expected = a @ a
     out = torch.empty(2, 1024, 1024, device=dev)
-
-    def borrower():
-        streams = [torch.cuda.Stream(), torch.cuda.Stream()]  # new streams: cuBLAS creates a workspace for each
-        for i, s in enumerate(streams):
+    with region.lend() as loan:  # no LeakError: cuBLAS workspaces made for the new streams are released
+        for i, s in enumerate([torch.cuda.Stream(), torch.cuda.Stream()]):
             s.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(s):
                 tmp = a @ a
                 assert in_region(region, tmp)
                 out[i].copy_(tmp)
-        for s in streams:
             torch.cuda.current_stream().wait_stream(s)
-
-    with region.lend() as loan:  # no LeakError: the workspaces made during the loan are released
-        borrower()
-    assert torch.equal(out[0], expected) and torch.equal(out[1], expected)
-    assert loan.touched_blocks
+        del tmp
+    assert torch.equal(out[0], a @ a) and torch.equal(out[1], a @ a)
     assert_untouched_identical(region, before, loan)
 
 
 def test_leak_is_detected_and_memory_recovers():
-    region, before = make_region(256 * MiB)
+    region, _ = make_region(256 * MiB)
     kept = []
     with pytest.raises(LeakError, match=r"1 allocation\(s\) made during the loan are still alive"):
         with region.lend():
             kept.append(torch.empty(10 * MiB, dtype=torch.uint8, device=dev))
     assert in_region(region, kept[0])
-
-    # Once the tensor is gone and the cache emptied, the whole region can be lent again.
     kept.clear()
     torch.cuda.empty_cache()
-    with region.lend() as loan:
+    with region.lend() as loan:  # the whole region can be lent again
         t = torch.empty(region.nbytes, dtype=torch.uint8, device=dev)
         assert t.data_ptr() == region.tensor.data_ptr()
         del t
     assert loan.fallback_peak_bytes == 0
 
 
-def test_optimizer_state_created_during_loan_is_a_leak():
-    model, opt = make_model_and_optimizer()
-    tokens = torch.randint(0, 1000, (2, 33), device=dev)
-    region, _ = make_region(512 * MiB)
-    with pytest.raises(LeakError, match="optimizer states"):
-        with region.lend():
-            train_step(model, opt, tokens)  # AdamW creates exp_avg/exp_avg_sq on its first step
-
-
-def test_borrower_exceeds_region():
+def test_borrower_exceeding_the_region_uses_free_memory():
     region, before = make_region(1024 * MiB)
-
-    def borrower():
-        tensors = [torch.full((300 * MiB,), i + 1, dtype=torch.uint8, device=dev) for i in range(4)]  # 1200 MiB
+    with region.lend() as loan:
+        tensors = [torch.full((300 * MiB,), i + 1, dtype=torch.uint8, device=dev) for i in range(4)]
         assert [in_region(region, t) for t in tensors] == [True, True, True, False]
         assert all(bool((t == i + 1).all()) for i, t in enumerate(tensors))
-
-    with region.lend() as loan:
-        borrower()
-    assert loan.fallback_peak_bytes >= 300 * MiB
-    assert loan.touched_blocks == list(range(1, 16))  # 450 pages from the far end; block 0 keeps 32 - 30 free pages
+        del tensors
+    assert loan.fallback_peak_bytes >= 300 * MiB and loan.touched_blocks == list(range(1, 16))
     assert_untouched_identical(region, before, loan)
 
 
 def test_cuda_graph_captured_on_region_stays_valid():
     region, before = make_region(1024 * MiB)
-    head = region.tensor[: 16 * MiB]
-    out = torch.empty_like(head)
+    head, out = region.tensor[: 16 * MiB], torch.empty(16 * MiB, dtype=torch.uint8, device=dev)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         out.copy_(head)
         head.add_(1)
-
-    ptr = region.tensor.data_ptr()
     with region.lend() as loan:
-        torch.empty(200 * MiB, dtype=torch.uint8, device=dev).fill_(0)  # far end: block 0 untouched
-    assert region.tensor.data_ptr() == ptr and 0 not in loan.touched_blocks
+        torch.empty(200 * MiB, dtype=torch.uint8, device=dev).fill_(0)
+    assert 0 not in loan.touched_blocks
     graph.replay()
     torch.cuda.synchronize()
-    assert torch.equal(out, before[: 16 * MiB])
-    assert torch.equal(head, before[: 16 * MiB] + 1)
+    assert torch.equal(out, before[: 16 * MiB]) and torch.equal(head, before[: 16 * MiB] + 1)
 
 
-@pytest.mark.parametrize("mode", ["upfront", "lazy"])
-def test_restore_touched_blocks_gives_back_everything(mode):
+@pytest.mark.parametrize("mode", ["eager", "lazy"])
+def test_backup_and_restore_give_back_everything(mode):
     region, before = make_region(1024 * MiB)
-    backup = torch.empty(region.nbytes, dtype=torch.uint8, pin_memory=True)
-    if mode == "upfront":
-        backup.copy_(region.tensor)
-    else:
-        backup.zero_()  # lazy: only the touched blocks get written into it
-
-    with region.lend(backup=backup if mode == "lazy" else None) as loan:
-        torch.empty(300 * MiB, dtype=torch.uint8, device=dev).fill_(0)
-        torch.empty(5 * MiB, dtype=torch.uint8, device=dev).fill_(0)
-    assert changed_blocks(region, before) == loan.touched_blocks
-    region.restore(backup, loan.touched_blocks)
+    empty = [15, 14, 3]
+    backup = torch.zeros(region.nbytes, dtype=torch.uint8, pin_memory=True)
+    if mode == "eager":
+        region.save(backup, [b for b in range(16) if b not in empty])
+    with region.lend(empty=empty, backup=backup if mode == "lazy" else None) as loan:
+        # Blocks 15, 14 and 3 (empty), then the 4 data blocks nearest the far end: pages 348..447 (blocks 10-13).
+        kept = [torch.empty(n, dtype=torch.uint8, device=dev).fill_(1) for n in (64 * MiB, 64 * MiB, 64 * MiB, 200 * MiB)]
+        del kept
+    assert loan.touched_blocks == [3, 10, 11, 12, 13, 14, 15] and loan.dirty_blocks == [10, 11, 12, 13]
+    if mode == "lazy":
+        assert all(not backup.view(16, -1)[b].any() for b in empty)  # never copied
+    region.restore(backup, loan.dirty_blocks)
     torch.cuda.synchronize()
-    assert torch.equal(region.tensor, before)
+    assert all(torch.equal(region.tensor.view(16, -1)[b], before.view(16, -1)[b]) for b in range(16) if b not in empty)
+
+
+def test_lazy_backup_with_allocations_on_side_streams():
+    region, before = make_region(1024 * MiB)
+    backup = torch.zeros(region.nbytes, dtype=torch.uint8, pin_memory=True)
+    with region.lend(backup=backup) as loan:
+        for i in range(2):
+            with torch.cuda.stream(torch.cuda.Stream()):
+                torch.empty(150 * MiB, dtype=torch.uint8, device=dev).fill_(i + 1)
+        torch.cuda.synchronize()
+    region.restore(backup, loan.dirty_blocks)
+    torch.cuda.synchronize()
+    assert loan.dirty_blocks and torch.equal(region.tensor, before)
+
+
+def test_owner_kernels_still_running_finish_before_the_loan_starts():
+    region, _ = make_region(1024 * MiB)
+    with torch.cuda.stream(torch.cuda.Stream()):
+        torch.cuda._sleep(int(5e8))
+        region.tensor[15 * BLOCK :].fill_(42)  # the owner's last write, still queued when it lends
+    backup = torch.zeros(region.nbytes, dtype=torch.uint8, pin_memory=True)
+    with region.lend(backup=backup) as loan:
+        torch.empty(BLOCK, dtype=torch.uint8, device=dev).fill_(1)
+    assert loan.touched_blocks == [15] and bool((backup[15 * BLOCK :] == 42).all())
 
 
 def test_region_memory_lives_as_long_as_its_tensor_views():
@@ -206,8 +217,16 @@ def test_region_memory_lives_as_long_as_its_tensor_views():
     assert torch.cuda.mem_get_info()[0] >= free_before - 64 * MiB
 
 
-def test_block_size_validation():
-    with pytest.raises(ValueError):
-        LendableRegion(64 * MiB, block_size=PAGE + 1)
-    with pytest.raises(ValueError):
-        LendableRegion(65 * MiB, block_size=64 * MiB)
+@pytest.mark.parametrize(
+    "script",
+    [
+        "try:\n    with r.lend():\n        kept.append(torch.empty(10 * 1024**2, device='cuda'))\nexcept LeakError:\n    pass",
+        "try:\n    with r.lend():\n        kept.append(torch.empty(10 * 1024**2, device='cuda'))\nexcept LeakError:\n    pass\ndel r",
+    ],
+    ids=["leaked tensor alive at exit", "region dropped before its leaked tensor"],
+)
+def test_interpreter_shutdown(script):
+    # Pool and pluggable-allocator destruction order has crashed at exit in some torch versions (pytorch#146431).
+    code = "import torch\nfrom memlend import LendableRegion, LeakError\nr = LendableRegion(256 * 1024**2)\nkept = []\n" + script + "\nprint('done')\n"
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0 and "done" in result.stdout, result.stderr[-3000:]

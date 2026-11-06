@@ -1,27 +1,0 @@
-NVIDIA H100 80GB HBM3 | torch 2.13.0+cu130 | pinned copies: D2H 7.4 GB/s, H2D 14.2 GB/s
-Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 6889.49it/s]
-KV cache 64.1 GiB (1026 blocks), live 3.0 GiB = 28086 tokens at 114688 B/token; headroom 8 GiB; step peak memory: batch 2: 14.7 GiB, batch 4: 29.3 GiB, batch 8: 58.6 GiB
-[W1106 17:00:37.360039111 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 2489319424 bytes (free: 1784872960, total: 85019590656).
-[W1106 17:00:37.362030389 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 2489319424 bytes (free: 1818427392, total: 85019590656).
-{"batch": 2, "strategy": "do-nothing", "cycle_s": null, "oom": true, "d2h_gib": 0, "h2d_gib": 0}
-{"batch": 2, "strategy": "copy-all", "cycle_s": 15.332091642500018, "d2h_gib": 64.125, "h2d_gib": 64.125, "address_changed": false}
-{"batch": 2, "strategy": "recompute", "cycle_s": 0.5214787895092741, "d2h_gib": 0, "h2d_gib": 0, "recomputed_tokens": 28086}
-[W1106 17:01:09.178599552 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 21168128, total: 85019590656).
-[W1106 17:01:09.178749185 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 21168128, total: 85019590656).
-{"batch": 4, "strategy": "do-nothing", "cycle_s": null, "oom": true, "d2h_gib": 0, "h2d_gib": 0}
-{"batch": 4, "strategy": "copy-all", "cycle_s": 15.162779845995829, "d2h_gib": 64.125, "h2d_gib": 64.125, "address_changed": false}
-{"batch": 4, "strategy": "recompute", "cycle_s": 0.6634521749947453, "d2h_gib": 0, "h2d_gib": 0, "recomputed_tokens": 28086}
-[W1106 17:01:41.892169675 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 19070976, total: 85019590656).
-[W1106 17:01:41.892344669 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 19070976, total: 85019590656).
-{"batch": 8, "strategy": "do-nothing", "cycle_s": null, "oom": true, "d2h_gib": 0, "h2d_gib": 0}
-{"batch": 8, "strategy": "copy-all", "cycle_s": 15.569700755993836, "d2h_gib": 64.125, "h2d_gib": 64.125, "address_changed": false}
-{"batch": 8, "strategy": "recompute", "cycle_s": 0.8868339740001829, "d2h_gib": 0, "h2d_gib": 0, "recomputed_tokens": 28086}
-{"batch": 2, "strategy": "memlend-eager", "cycle_s": 0.5886184859991772, "d2h_gib": 3.0, "h2d_gib": 0.0, "touched_gib": 16.0625, "fallback_gib": 0.0, "address_changed": false}
-{"batch": 2, "strategy": "memlend-lazy", "cycle_s": 0.12470328349445481, "d2h_gib": 0.0, "h2d_gib": 0.0, "touched_gib": 16.0625, "fallback_gib": 0.0, "address_changed": false}
-{"batch": 4, "strategy": "memlend-eager", "cycle_s": 0.6721104805037612, "d2h_gib": 3.0, "h2d_gib": 0.0, "touched_gib": 31.8125, "fallback_gib": 0.0, "address_changed": false}
-{"batch": 4, "strategy": "memlend-lazy", "cycle_s": 0.20806948099925648, "d2h_gib": 0.0, "h2d_gib": 0.0, "touched_gib": 31.8125, "fallback_gib": 0.0, "address_changed": false}
-[W1106 17:02:18.863472864 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 9957277696 bytes (free: 8499953664, total: 85019590656).
-[W1106 17:02:18.863893222 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 9957277696 bytes (free: 8499953664, total: 85019590656).
-{"batch": 8, "strategy": "memlend-eager", "cycle_s": null, "oom": true, "d2h_gib": 0, "h2d_gib": 0, "error": "Tried to allocate 9"}
-{"batch": 8, "strategy": "memlend-lazy", "cycle_s": null, "oom": true, "d2h_gib": 0, "h2d_gib": 0, "error": "Tried to allocate 9"}
-exit=0

@@ -7,7 +7,7 @@ import torch
 
 from memlend import LendableRegion
 
-MiB = 1 << 20
+MiB = 1024**2
 needs_two_gpus = pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs 2 GPUs")
 
 

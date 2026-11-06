@@ -1,69 +1,80 @@
 # memlend
 
 Lend a GPU memory region to arbitrary PyTorch code, then learn exactly which blocks it used.
+The owner keeps its tensor at a fixed address; while it is paused, any PyTorch code (autograd, several streams, NCCL)
+allocates from the region; afterwards every block it did not take is bit-identical, with no copy.
 
-An owner (an inference engine's KV cache, an embedding table, any big buffer that must survive) keeps its tensor at a
-fixed address. While it is paused, any PyTorch code (a training step, autograd, cuBLAS, several streams, NCCL) can
-allocate from that memory. Afterwards the owner learns which blocks were handed out: every other block is bit-identical
-without a single copy, and only the blocks that held data and were used need to be restored.
+## Install
+
+```bash
+pip install git+https://github.com/qgallouedec/memlend.git
+pip install .   # from a clone, for development
+```
+
+A C compiler (gcc or clang) is needed at install time; no CUDA toolkit.
+
+## Example
 
 ```python
 import torch
 from memlend import LendableRegion
 
-region = LendableRegion(40 << 30)                       # the owner's memory: region.tensor, 40 GiB, fixed address
+region = LendableRegion(16 * 1024**3)                    # the owner's memory, in 64 MiB blocks
+blocks = region.tensor.view(torch.int64).view(region.num_blocks, -1)
+blocks.random_()                                         # the owner's data
+empty = range(0, region.num_blocks, 2)                   # every other block holds nothing
+data = list(range(1, region.num_blocks, 2))
+checksums = blocks.sum(1)
 backup = torch.empty(region.nbytes, dtype=torch.uint8, pin_memory=True)
-with region.lend(empty=free_blocks, backup=backup) as loan:  # blocks holding nothing go first and are never copied
-    train_step()                                         # any PyTorch code; its CUDA allocations may use the region
-region.restore(backup, loan.dirty_blocks)               # copy back only what held data and was used
-print(len(loan.touched_blocks), "blocks lent,", len(loan.dirty_blocks), "restored")
+
+def run_anything():                                      # any PyTorch code
+    x = torch.randn(1024**3, device="cuda")              # 4 GiB
+    return (x * x).mean().item()
+
+with region.lend(empty=empty, backup=backup) as loan:    # data blocks are copied out just before being lent
+    run_anything()
+region.restore(backup, loan.dirty_blocks)                # copy back only the data blocks that were lent
+print(len(loan.touched_blocks), "blocks lent,", len(loan.dirty_blocks), "restored, data intact:",
+      torch.equal(blocks.sum(1)[data], checksums[data]))
 ```
 
-## Install
+Each allocation goes to the contiguous run of the region that overwrites the fewest data blocks (empty blocks and
+blocks already lent in this loan are free), nearest the far end on ties, and to ordinary free GPU memory when the region
+has no run long enough. `loan.touched_blocks` lists the lent blocks, `loan.dirty_blocks` those holding data. Anything the
+borrower leaves alive in the region raises `LeakError` when the loan ends. `region.save` and `region.restore` copy
+blocks to and from a CPU buffer.
 
-```bash
-pip install .   # from this directory
-```
+## Benchmark
 
-Requirements: Linux, an NVIDIA GPU and driver, PyTorch 2.8 to 2.15 with its default ("native") CUDA allocator (with `expandable_segments`, PyTorch 2.10 or newer), and a
-C compiler (gcc or clang) at install time to build the small allocator in `src/memlend/_allocator.c`. No CUDA toolkit
-is needed: the CUDA driver is opened at runtime. No dependency beyond torch.
+`benchmark.py`: a region taking all free GPU memory but 8 GiB, with a share of its 64 MiB blocks holding data (in 1 GiB
+runs), lent to a job that needs most of the GPU (a forward, backward and update pass of a 0.6B-parameter model). Time per
+cycle (make room, run the job, get the data back) and GiB copied between GPU and CPU.
 
-The library refuses to run (with a clear error) on torch versions outside the tested range and under
-`PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync`. `MEMLEND_SKIP_TORCH_CHECK=1` bypasses the version check, for trying
-a new release after running the test suite.
+| GPU, data in the region | job needs | copy all out and back | discard and recompute | memlend, lend order (2899ec9) | memlend |
+|---|---|---|---|---|---|
+| H100, 20 of 66 GiB | 15 GiB | 15.4 s (132 GiB) | 1.80 s | 0.12 s (0 GiB) | 0.13 s (0 GiB) |
+| H100, 20 of 66 GiB | 59 GiB | 15.9 s (132 GiB) | 1.87 s | OOM | OOM |
+| H100, 3 of 66 GiB | 59 GiB | 15.8 s (132 GiB) | 0.91 s | OOM | 0.53 s (2.0 GiB) |
+| B200, 49 of 165 GiB | 15 GiB | 6.7 s (330 GiB) | 2.54 s | 0.08 s (0 GiB) | 0.08 s (0 GiB) |
+| B200, 49 of 165 GiB | 59 GiB | 6.8 s (330 GiB) | 2.25 s | 0.53 s (18.6 GiB) | 0.28 s (4.6 GiB) |
+| B200, 49 of 165 GiB | 117 GiB | 7.1 s (330 GiB) | 2.50 s | 1.13 s (41.4 GiB) | OOM |
+| B200, 8 of 165 GiB | 117 GiB | 7.1 s (330 GiB) | 1.01 s | 0.48 s (2.0 GiB) | 0.48 s (1.4 GiB) |
 
-## API
+Doing nothing (running the job next to the full region) OOMs in every row. The H100 host link is slow here (7 GB/s out,
+14 GB/s in; B200: 57 and 55 GB/s). The "lend order" column is the previous placement, measured with the previous
+version of the script on a slightly smaller region. The OOM rows are the contiguity limitation below.
 
-- `LendableRegion(nbytes, block_size=64 << 20, device=None)`: allocates the region. `region.tensor` is a flat `uint8`
-  CUDA tensor over it, valid for as long as any view of it lives. `block_size` (a multiple of 2 MiB) is the unit of
-  everything below.
-- `region.set_lend_order(blocks)`: these blocks are lent first, in this order, then the rest from the far end.
-- `region.lend(empty=(), backup=None)`: context manager. Inside it, every CUDA allocation on the region's device, from
-  any thread and stream, may be served from the region, then from ordinary free GPU memory once the region is full.
-  - `empty`: blocks that hold nothing the owner needs. They are lent before anything else and never backed up.
-  - `backup`: a pinned CPU `uint8` tensor of `nbytes`. Every other block is copied into it right before it is first
-    lent (lazy backup), ordered on the borrower's stream so the host never waits.
-- After the loan: `loan.touched_blocks` (lent, so overwritten), `loan.dirty_blocks` (touched and not declared empty: the
-  ones to restore), `loan.backed_up_blocks`, `loan.fallback_peak_bytes` (memory taken outside the region).
-- `region.save(backup, blocks=None)` and `region.restore(backup, blocks=None)`: copy blocks out to / back from a CPU
-  buffer, one copy per contiguous run.
-- `memlend.LeakError`: raised at the end of a loan if anything the borrower allocated is still alive in lent memory.
+## Compatibility
 
-## Rules for borrowers
+Tested with torch 2.8 to 2.15 on Python 3.10 to 3.13 (H100; B200 on Python 3.12), with the default allocator settings,
+`max_split_size_mb`, and `expandable_segments:True` from torch 2.10 (2.8 and 2.9 reject memory pools under it). Other
+torch versions and `backend:cudaMallocAsync` are refused; `MEMLEND_SKIP_TORCH_CHECK=1` bypasses the version check.
 
-- Everything allocated during the loan must be freed before it ends: run the borrower in a function (variables of a
-  `with` block outlive it), `zero_grad(set_to_none=True)`, and create long-lived state (optimizer states, CUDA graphs,
-  NCCL communicators) before lending. Anything left behind raises `LeakError` with its size and, if
-  `torch.cuda.memory._record_memory_history()` is on, where it was allocated.
-- The owner must not touch the region during a loan; the loan waits for the owner's pending kernels when it starts and
-  for the borrower's when it ends.
-- One loan per device at a time. Several regions per device are fine; carve several buffers out of one region to lend
-  them together.
+## Limitations
 
-See `DESIGN.md` for how it works, the compatibility matrix and the limitations, and `BENCHMARKS.md` for when it pays
-off.
-
-## License
-
-No license has been chosen yet: that is the author's decision.
+- Each allocation needs contiguous pages: a large one can fail (falling back to free GPU memory, or OOM) when the region
+  is fragmented, even with enough free pages in total.
+- The owner must not touch the region during a loan, and one loan per device runs at a time.
+- Memory the borrower keeps after the loan (state created during it, variables still referenced, CUDA graphs captured in
+  it on torch before 2.14) raises `LeakError`: create long-lived state before lending.
+- Linux and CUDA only. License: not chosen yet.
