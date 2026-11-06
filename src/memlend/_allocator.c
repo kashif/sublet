@@ -1,9 +1,11 @@
-// Segment allocator behind the MemPool used during a loan (see region.py and DESIGN.md).
+// Segment allocator behind the MemPool used during a loan (see region.py).
 //
-// The caching allocator asks for whole segments (multiples of 2 MiB). memlend_malloc serves each one from the run of
-// contiguous unlent 2 MiB pages of the region lent on that device that costs least: the number of distinct blocks in
-// it that hold data and were not touched yet in this loan (empty blocks and already-touched blocks are free). Ties go to
-// the far end of the region. It falls back to cuMemAlloc (ordinary free GPU memory) only when no run is long enough.
+// The region is one address range backed by one physical 2 MiB page per page of the range. The caching allocator asks
+// for whole segments (multiples of 2 MiB); memlend_malloc gives each one a fresh address range and maps unlent pages of
+// the region lent on that device behind it, side by side, wherever they sit in the region: first pages of blocks that
+// cost nothing (declared empty, or already lent in this loan), then pages of blocks holding data, whole blocks at a time;
+// each from the far end of the region. When the region has no unlent page left, the rest of the segment is new device
+// memory. Data blocks are copied to the backup buffer before their first page is lent (lazy backup).
 //
 // The CUDA driver is opened at runtime (it is already loaded by PyTorch), so building needs only a C compiler.
 
@@ -15,23 +17,46 @@
 #include <sys/types.h>
 
 typedef unsigned long long CUdeviceptr;
+typedef unsigned long long CUmemGenericAllocationHandle;
 typedef int CUresult;
 typedef void* CUstream;
 typedef void* CUcontext;
 typedef void* CUevent;
+typedef struct {
+  int type;  // CU_MEM_LOCATION_TYPE_DEVICE
+  int id;
+} CUmemLocation;
+typedef struct {
+  int type;                  // CU_MEM_ALLOCATION_TYPE_PINNED
+  int requestedHandleTypes;  // CU_MEM_HANDLE_TYPE_NONE
+  CUmemLocation location;
+  void* win32HandleMetaData;
+  unsigned char compressionType, gpuDirectRDMACapable;
+  unsigned short usage;
+  unsigned char reserved[4];
+} CUmemAllocationProp;
+typedef struct {
+  CUmemLocation location;
+  int flags;  // CU_MEM_ACCESS_FLAGS_PROT_READWRITE
+} CUmemAccessDesc;
 
-#define DRIVER_FUNCTIONS(X)                                                       \
-  X(cuDevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain", CUcontext*, int)       \
-  X(cuCtxSetCurrent, "cuCtxSetCurrent", CUcontext)                               \
-  X(cuMemAlloc, "cuMemAlloc_v2", CUdeviceptr*, size_t)                           \
-  X(cuMemFree, "cuMemFree_v2", CUdeviceptr)                                      \
-  X(cuMemcpyDtoHAsync, "cuMemcpyDtoHAsync_v2", void*, CUdeviceptr, size_t, CUstream) \
-  X(cuStreamCreate, "cuStreamCreate", CUstream*, unsigned int)                   \
-  X(cuStreamSynchronize, "cuStreamSynchronize", CUstream)                        \
-  X(cuStreamDestroy, "cuStreamDestroy_v2", CUstream)                             \
-  X(cuEventCreate, "cuEventCreate", CUevent*, unsigned int)                      \
-  X(cuEventRecord, "cuEventRecord", CUevent, CUstream)                           \
-  X(cuEventDestroy, "cuEventDestroy_v2", CUevent)                                \
+#define DRIVER_FUNCTIONS(X)                                                                                 \
+  X(cuDevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain", CUcontext*, int)                                 \
+  X(cuCtxSetCurrent, "cuCtxSetCurrent", CUcontext)                                                         \
+  X(cuCtxSynchronize, "cuCtxSynchronize")                                                                  \
+  X(cuMemAddressReserve, "cuMemAddressReserve", CUdeviceptr*, size_t, size_t, CUdeviceptr, unsigned long long) \
+  X(cuMemAddressFree, "cuMemAddressFree", CUdeviceptr, size_t)                                             \
+  X(cuMemCreate, "cuMemCreate", CUmemGenericAllocationHandle*, size_t, const CUmemAllocationProp*, unsigned long long) \
+  X(cuMemRelease, "cuMemRelease", CUmemGenericAllocationHandle)                                            \
+  X(cuMemMap, "cuMemMap", CUdeviceptr, size_t, size_t, CUmemGenericAllocationHandle, unsigned long long)   \
+  X(cuMemUnmap, "cuMemUnmap", CUdeviceptr, size_t)                                                         \
+  X(cuMemSetAccess, "cuMemSetAccess", CUdeviceptr, size_t, const CUmemAccessDesc*, size_t)                 \
+  X(cuMemcpyDtoHAsync, "cuMemcpyDtoHAsync_v2", void*, CUdeviceptr, size_t, CUstream)                       \
+  X(cuStreamCreate, "cuStreamCreate", CUstream*, unsigned int)                                             \
+  X(cuStreamDestroy, "cuStreamDestroy_v2", CUstream)                                                       \
+  X(cuEventCreate, "cuEventCreate", CUevent*, unsigned int)                                                \
+  X(cuEventRecord, "cuEventRecord", CUevent, CUstream)                                                     \
+  X(cuEventDestroy, "cuEventDestroy_v2", CUevent)                                                          \
   X(cuStreamWaitEvent, "cuStreamWaitEvent", CUstream, CUevent, unsigned int)
 
 #define DECLARE(name, symbol, ...) static CUresult (*name)(__VA_ARGS__);
@@ -54,44 +79,81 @@ typedef struct Region {
   int device;
   CUdeviceptr base;
   int64_t npages, pages_per_block;
-  uint8_t* used;         // page currently backs a segment of a pool
-  uint8_t* skip;         // per block: declared empty for this loan (holds nothing, never backed up)
-  uint8_t* touched;      // per block: handed out during the current loan
-  int64_t* cost_prefix;  // scratch: number of costly blocks among the first b
-  // Lazy backup: before a non-empty block is first handed out, it is copied to `backup` on `copy_stream`, and every
-  // stream that asks for memory in it waits for that copy (its event).
+  CUmemGenericAllocationHandle* pages;  // physical memory of each page
+  uint8_t* used;     // page currently backs a segment of a pool
+  uint8_t* skip;     // per block: declared empty for this loan (holds nothing, never backed up)
+  uint8_t* touched;  // per block: a page of it was lent during the current loan
+  // Lazy backup: before a non-empty block is first lent, it is copied to `backup` on `copy_stream`, and every stream
+  // that asks for memory in it waits for that copy (its event).
   char* backup;
   CUevent* events;
   CUstream copy_stream;
   int dropped;  // the owner is gone; destroy once no page is used
-  struct Region* next;
 } Region;
 
+// A segment handed to a pool: `nregion` pages of region `r` (listed in `pages`), then `extra` new device memory.
+typedef struct Segment {
+  CUdeviceptr ptr;
+  int64_t npages, nregion;
+  int64_t* pages;
+  Region* r;
+  CUmemGenericAllocationHandle extra;
+  struct Segment* next;
+} Segment;
+
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-static Region* regions;                // all live regions: frees can arrive after the loan that made the segment ended
+static Segment* segments;              // all live segments: frees can arrive after the loan that made them ended
 static Region* lender[MAX_DEVICES];    // region serving mallocs during the current loan on each device
 static int64_t fallback_bytes[MAX_DEVICES], fallback_peak[MAX_DEVICES];
+
+static CUmemAllocationProp device_memory(int device) {
+  CUmemAllocationProp prop = {.type = 1, .location = {.type = 1, .id = device}};
+  return prop;
+}
+
+static void allow_access(CUdeviceptr ptr, size_t size, int device) {
+  CUmemAccessDesc access = {.location = {.type = 1, .id = device}, .flags = 3};
+  cuMemSetAccess(ptr, size, &access, 1);
+}
+
+static void destroy(Region* r) {
+  for (int64_t p = 0; p < r->npages && r->pages[p]; p++) {
+    cuMemUnmap(r->base + p * PAGE, PAGE);
+    cuMemRelease(r->pages[p]);
+  }
+  if (r->base) cuMemAddressFree(r->base, r->npages * PAGE);
+  if (r->copy_stream) cuStreamDestroy(r->copy_stream);
+  if (r->events)
+    for (int64_t b = 0; b < r->npages / r->pages_per_block; b++) cuEventDestroy(r->events[b]);
+  free(r->events), free(r->pages), free(r->used), free(r->skip), free(r->touched), free(r);
+}
 
 Region* memlend_create(int device, size_t nbytes, int64_t block_size) {
   // PyTorch's runtime calls use the device's primary context; the calling thread may not have it current yet.
   CUcontext ctx;
+  if (cuDevicePrimaryCtxRetain(&ctx, device) != 0 || cuCtxSetCurrent(ctx) != 0) return NULL;
   Region* r = calloc(1, sizeof(Region));
-  if (cuDevicePrimaryCtxRetain(&ctx, device) != 0 || cuCtxSetCurrent(ctx) != 0 || cuMemAlloc(&r->base, nbytes) != 0) {
-    free(r);
-    return NULL;
-  }
   r->device = device;
   r->npages = nbytes / PAGE;
   r->pages_per_block = block_size / PAGE;
   int64_t nblocks = r->npages / r->pages_per_block;
+  r->pages = calloc(r->npages, sizeof(CUmemGenericAllocationHandle));
   r->used = calloc(r->npages, 1);
   r->skip = calloc(nblocks, 1);
   r->touched = calloc(nblocks, 1);
-  r->cost_prefix = malloc((nblocks + 1) * sizeof(int64_t));
-  pthread_mutex_lock(&mu);
-  r->next = regions;
-  regions = r;
-  pthread_mutex_unlock(&mu);
+  CUmemAllocationProp prop = device_memory(device);
+  if (cuMemAddressReserve(&r->base, nbytes, 0, 0, 0) != 0) {
+    r->base = 0;
+    destroy(r);
+    return NULL;
+  }
+  for (int64_t p = 0; p < r->npages; p++)
+    if (cuMemCreate(&r->pages[p], PAGE, &prop, 0) != 0 || cuMemMap(r->base + p * PAGE, PAGE, 0, r->pages[p], 0) != 0) {
+      if (r->pages[p]) cuMemRelease(r->pages[p]), r->pages[p] = 0;
+      destroy(r);
+      return NULL;
+    }
+  allow_access(r->base, nbytes, device);
   return r;
 }
 
@@ -101,20 +163,7 @@ static int64_t used_pages(Region* r) {
   return n;
 }
 
-static void destroy(Region* r) {
-  for (Region** p = &regions; *p; p = &(*p)->next)
-    if (*p == r) {
-      *p = r->next;
-      break;
-    }
-  cuMemFree(r->base);
-  if (r->copy_stream) cuStreamDestroy(r->copy_stream);
-  if (r->events)
-    for (int64_t b = 0; b < r->npages / r->pages_per_block; b++) cuEventDestroy(r->events[b]);
-  free(r->events), free(r->used), free(r->skip), free(r->touched), free(r->cost_prefix), free(r);
-}
-
-// The owner dropped the region. If leaked borrower segments still live in it, free it when the last one goes.
+// The owner dropped the region. If leaked borrower segments still use its pages, free it when the last one goes.
 void memlend_destroy(Region* r) {
   pthread_mutex_lock(&mu);
   if (used_pages(r))
@@ -154,66 +203,89 @@ void memlend_end(Region* r) {
 void memlend_touched(Region* r, uint8_t* out) { memcpy(out, r->touched, r->npages / r->pages_per_block); }
 int64_t memlend_fallback_peak(int device) { return fallback_peak[device]; }
 
-// First page of the run of n contiguous unlent pages with the fewest distinct blocks that hold data and were not
-// touched yet in this loan; among equal costs, the one nearest the far end. -1 if no n unlent pages are contiguous.
-static int64_t find_window(Region* r, int64_t n) {
-  int64_t ppb = r->pages_per_block, nblocks = r->npages / ppb;
-  r->cost_prefix[0] = 0;
-  for (int64_t b = 0; b < nblocks; b++) r->cost_prefix[b + 1] = r->cost_prefix[b] + !(r->skip[b] || r->touched[b]);
-  int64_t best = -1, best_cost = INT64_MAX, free_len = 0;
-  for (int64_t p = r->npages - 1; p >= 0; p--) {  // from the far end, so the first window of a cost is the farthest
-    free_len = r->used[p] ? 0 : free_len + 1;     // unlent pages from p upward
-    if (free_len < n) continue;
-    int64_t cost = r->cost_prefix[(p + n - 1) / ppb + 1] - r->cost_prefix[p / ppb];
-    if (cost < best_cost) {
-      best = p, best_cost = cost;
-      if (cost == 0) break;
+// 1 if address p is in a page of r lent to a segment.
+int memlend_lends(Region* r, CUdeviceptr p) {
+  pthread_mutex_lock(&mu);
+  Segment* s = segments;
+  while (s && !(s->r == r && s->ptr <= p && p < s->ptr + s->nregion * PAGE)) s = s->next;
+  pthread_mutex_unlock(&mu);
+  return s != NULL;
+}
+
+// Up to n unlent pages of r, cheapest first: pages of blocks declared empty or already lent in this loan, then pages of
+// blocks holding data, so that these are taken whole. Each group from the far end of the region.
+static int64_t pick_pages(Region* r, int64_t n, int64_t* out) {
+  int64_t k = 0;
+  for (int costly = 0; costly < 2; costly++)
+    for (int64_t p = r->npages - 1; p >= 0 && k < n; p--) {
+      int64_t b = p / r->pages_per_block;
+      int holds_data = !r->skip[b] && !r->touched[b];
+      if (!r->used[p] && holds_data == costly) out[k++] = p;
     }
-  }
-  return best;
+  return k;
 }
 
 void* memlend_malloc(ssize_t size, int device, void* stream) {
-  int64_t k = (size + PAGE - 1) / PAGE;
   pthread_mutex_lock(&mu);
   Region* r = lender[device];
-  int64_t start = r ? find_window(r, k) : -1;
-  if (start >= 0) {
-    memset(r->used + start, 1, k);
-    for (int64_t b = start / r->pages_per_block; b <= (start + k - 1) / r->pages_per_block; b++) {
-      int first = !r->touched[b];
-      r->touched[b] = 1;
-      if (!r->backup || r->skip[b]) continue;
-      if (first) {
+  Segment* s = calloc(1, sizeof(Segment));
+  s->r = r;
+  s->npages = (size + PAGE - 1) / PAGE;
+  s->pages = malloc(s->npages * sizeof(int64_t));
+  s->nregion = r ? pick_pages(r, s->npages, s->pages) : 0;
+  size_t extra = (s->npages - s->nregion) * PAGE;
+  CUmemAllocationProp prop = device_memory(device);
+  if ((extra && cuMemCreate(&s->extra, extra, &prop, 0) != 0) || cuMemAddressReserve(&s->ptr, s->npages * PAGE, 0, 0, 0) != 0) {
+    if (extra && s->extra) cuMemRelease(s->extra);
+    free(s->pages), free(s);
+    pthread_mutex_unlock(&mu);
+    return NULL;
+  }
+  int64_t last = -1;
+  for (int64_t i = 0; i < s->nregion; i++) {
+    int64_t p = s->pages[i], b = p / r->pages_per_block;
+    r->used[p] = 1;
+    cuMemMap(s->ptr + i * PAGE, PAGE, 0, r->pages[p], 0);
+    if (b == last) continue;  // pages of a block are picked one after another
+    last = b;
+    if (r->backup && !r->skip[b]) {
+      if (!r->touched[b]) {
         size_t bs = r->pages_per_block * PAGE;
         cuMemcpyDtoHAsync(r->backup + b * bs, r->base + b * bs, bs, r->copy_stream);
         cuEventRecord(r->events[b], r->copy_stream);
       }
       cuStreamWaitEvent((CUstream)stream, r->events[b], 0);  // the borrower's kernels on this stream follow the copy
     }
-    pthread_mutex_unlock(&mu);
-    return (void*)(r->base + start * PAGE);
+    r->touched[b] = 1;
   }
-  CUdeviceptr p = 0;
-  if (cuMemAlloc(&p, size) == 0) {
-    fallback_bytes[device] += size;
-    if (fallback_bytes[device] > fallback_peak[device]) fallback_peak[device] = fallback_bytes[device];
-  }
+  if (extra) cuMemMap(s->ptr + s->nregion * PAGE, extra, 0, s->extra, 0);
+  allow_access(s->ptr, s->npages * PAGE, device);
+  fallback_bytes[device] += extra;
+  if (fallback_bytes[device] > fallback_peak[device]) fallback_peak[device] = fallback_bytes[device];
+  s->next = segments;
+  segments = s;
   pthread_mutex_unlock(&mu);
-  return (void*)p;
+  return (void*)s->ptr;
 }
 
 void memlend_free(void* ptr, size_t size, int device, void* stream) {
-  CUdeviceptr p = (CUdeviceptr)ptr;
   pthread_mutex_lock(&mu);
-  for (Region* r = regions; r; r = r->next)
-    if (p >= r->base && p < r->base + r->npages * PAGE) {
-      memset(r->used + (p - r->base) / PAGE, 0, (size + PAGE - 1) / PAGE);
-      if (r->dropped && !used_pages(r)) destroy(r);
-      pthread_mutex_unlock(&mu);
-      return;
-    }
-  cuMemFree(p);
-  fallback_bytes[device] -= size;
+  Segment** link = &segments;
+  while ((*link)->ptr != (CUdeviceptr)ptr) link = &(*link)->next;
+  Segment* s = *link;
+  *link = s->next;
+  cuCtxSynchronize();  // unmapping does not wait for kernels still using the memory
+  for (int64_t i = 0; i < s->nregion; i++) {
+    cuMemUnmap(s->ptr + i * PAGE, PAGE);
+    s->r->used[s->pages[i]] = 0;
+  }
+  if (s->nregion < s->npages) {
+    cuMemUnmap(s->ptr + s->nregion * PAGE, (s->npages - s->nregion) * PAGE);
+    cuMemRelease(s->extra);
+    fallback_bytes[device] -= (s->npages - s->nregion) * PAGE;
+  }
+  cuMemAddressFree(s->ptr, s->npages * PAGE);
+  if (s->r && s->r->dropped && !used_pages(s->r)) destroy(s->r);
+  free(s->pages), free(s);
   pthread_mutex_unlock(&mu);
 }

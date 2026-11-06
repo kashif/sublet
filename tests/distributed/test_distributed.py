@@ -30,7 +30,7 @@ def test_concurrent_loans_on_two_devices():
     with regions[0].lend() as loan0, regions[1].lend() as loan1:
         for d, r in enumerate(regions):
             t = torch.empty(100 * MiB, dtype=torch.uint8, device=d).fill_(d + 1)
-            assert r.tensor.data_ptr() <= t.data_ptr() < r.tensor.data_ptr() + r.nbytes
+            assert r._lends(t.data_ptr())
             del t
     for r, b, loan in zip(regions, before, (loan0, loan1)):
         assert loan.touched_blocks == [6, 7]

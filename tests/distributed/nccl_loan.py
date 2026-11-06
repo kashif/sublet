@@ -53,7 +53,7 @@ def collectives():
     results[0] = x[0] - world * (world + 1) / 2
     results[1] = (gathered.view(world, n)[:, 0] - torch.arange(world, device=dev)).abs().sum()
     results[2] = b[0] - 10
-    assert all(region.tensor.data_ptr() <= t.data_ptr() < region.tensor.data_ptr() + region.nbytes for t in (x, gathered, b))
+    assert all(region._lends(t.data_ptr()) for t in (x, gathered, b))
 
 
 log(f"start ({mode} communicator)")

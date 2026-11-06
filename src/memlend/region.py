@@ -30,16 +30,16 @@ def _load():
         lib.memlend_end.argtypes = [p]
         lib.memlend_touched.argtypes = [p, p]
         lib.memlend_fallback_peak.argtypes, lib.memlend_fallback_peak.restype = [ctypes.c_int], ctypes.c_int64
+        lib.memlend_lends.argtypes, lib.memlend_lends.restype = [p, ctypes.c_uint64], ctypes.c_int
         _allocator = _compat.pluggable_allocator(spec.origin)
         _lib = lib
     return _lib
 
 
 class _DeviceMemory:
-    """cuMemAlloc'd memory exposed through `__cuda_array_interface__`, freed when the last tensor view dies.
+    """The region's memory exposed through `__cuda_array_interface__`, freed when the last tensor view dies.
 
-    It is allocated outside PyTorch's caching allocator, which indexes allocations by pointer: the borrower's segments
-    are sub-ranges of the region, so the region's own pointer must not be one of its allocations.
+    memlend allocates it page by page itself, so that it can map the same pages into the borrower's segments.
     """
 
     def __init__(self, handle, nbytes):
@@ -84,8 +84,9 @@ class LendableRegion:
     def lend(self, empty=(), backup: torch.Tensor | None = None) -> "Loan":
         """Context manager: inside it, every CUDA allocation on this device may be served from the region.
 
-        Each segment the caching allocator asks for goes to the contiguous run that overwrites the fewest blocks holding
-        data, nearest the far end of the region on ties.
+        Each segment the caching allocator asks for gets its own addresses, backed by unlent pages of the region wherever
+        they are: first pages of empty blocks and of blocks already lent, then pages of blocks holding data, then new
+        device memory once the region is used up.
 
         Args:
             empty (iterable of `int`, *optional*):
@@ -105,6 +106,10 @@ class LendableRegion:
         """Copy `blocks` (default: all) from `backup` into the region, on the current stream."""
         for a, b in self._runs(blocks):
             self.tensor[a:b].copy_(backup[a:b], non_blocking=True)
+
+    def _lends(self, ptr):
+        """Whether address `ptr` is in a page of the region lent to a segment."""
+        return bool(_lib.memlend_lends(self._handle, ptr))
 
     def _runs(self, blocks):
         blocks = sorted(set(range(self.num_blocks) if blocks is None else map(int, blocks)))
@@ -149,11 +154,10 @@ class Loan:
         torch.cuda.synchronize(device)  # the borrower's kernels may still use the region
         _compat.stop_routing(self._pool, device)
         _compat.clear_cublas_workspaces()
-        lo, hi = region.tensor.data_ptr(), region.tensor.data_ptr() + region.nbytes
-        live = _compat.live_blocks(self._pool, lo, hi)
+        live = _compat.live_blocks(self._pool, region._lends)
         if live:  # garbage cycles may still hold borrower tensors
             gc.collect()
-            live = _compat.live_blocks(self._pool, lo, hi)
+            live = _compat.live_blocks(self._pool, region._lends)
         del self._pool  # last reference: its free segments go back to the allocator
         _lib.memlend_end(region._handle)
         del _active[device.index]
@@ -163,18 +167,18 @@ class Loan:
         self.dirty_blocks = [b for b in self.touched_blocks if b not in self.empty]
         self.fallback_peak_bytes = _lib.memlend_fallback_peak(device.index)
         if live and exc_type is None:
-            raise LeakError(_leak_message(live, lo))
+            raise LeakError(_leak_message(live))
         return False
 
 
-def _leak_message(live, base):
+def _leak_message(live):
     lines = [
         f"{len(live)} allocation(s) made during the loan are still alive in lent memory ({sum(b['size'] for b in live)} "
         "bytes). Free them before the loan ends (`del` them, or run the borrower in a function), and create "
         "long-lived state before lending."
     ]
     for block in live[:10]:
-        lines.append(f"  - {block['requested_size']} bytes at region offset {block['address'] - base}")
+        lines.append(f"  - {block['requested_size']} bytes")
         lines += [f"      {f['filename']}:{f['line']} {f['name']}" for f in block.get("frames", []) if f["filename"].endswith(".py")][:6]
     if not any(block.get("frames") for block in live):
         lines.append("Call torch.cuda.memory._record_memory_history() before the loan to see where they were allocated.")

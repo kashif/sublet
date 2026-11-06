@@ -4,19 +4,15 @@ import sys
 import pytest
 import torch
 
-from conftest import BLOCK, PPB, MiB, assert_untouched_identical, autograd_step, dev, in_region, make_model, make_region
+from conftest import BLOCK, MiB, assert_untouched_identical, autograd_step, dev, in_region, make_model, make_region
 from memlend import LeakError, LendableRegion
-
-
-def page_of(region, t):
-    return (t.data_ptr() - region.tensor.data_ptr()) // (2 * MiB)
 
 
 def test_untouched_blocks_bit_identical_and_touched_reported():
     region, before = make_region(1024 * MiB)  # 16 blocks of 32 pages
 
     def borrower():
-        # Segments requested: 100 MiB, 20 MiB (for 3 MiB), 2 MiB (small pool), 40 MiB. From the far end: pages 431..511.
+        # Segments requested: 100 MiB, 20 MiB (for 3 MiB), 2 MiB (small pool), 40 MiB: 81 pages from the far end.
         kept = [torch.empty(n, dtype=torch.uint8, device=dev) for n in (100 * MiB, 3 * MiB, 500_000, 40 * MiB)]
         for i, t in enumerate(kept):
             assert in_region(region, t)
@@ -28,34 +24,17 @@ def test_untouched_blocks_bit_identical_and_touched_reported():
     assert assert_untouched_identical(region, before, loan) == [13, 14, 15]
 
 
-def cheapest_run(num_blocks, free_blocks, lent_pages, pages):
-    """Brute force: (cost, first page) of the run of `pages` unlent pages overwriting the fewest data blocks, farthest first."""
-    best = None
-    for start in range(num_blocks * PPB - pages, -1, -1):
-        if not lent_pages.isdisjoint(range(start, start + pages)):
-            continue
-        cost = len(set(range(start // PPB, (start + pages - 1) // PPB + 1)) - free_blocks)
-        if best is None or cost < best[0]:
-            best = (cost, start)
-    return best
-
-
-def test_placement_overwrites_the_fewest_data_blocks():
-    # Empty runs of at most 3 blocks, a request of 4 blocks: some data block must be lent.
+def test_one_allocation_takes_scattered_empty_blocks():
+    # Every other block holds data: one allocation of all the empty blocks lends no data block.
     region, before = make_region(1024 * MiB)
-    empty = {0, 1, 2, 4, 5, 6, 13, 15}
+    empty = range(0, 16, 2)
     backup = torch.zeros(region.nbytes, dtype=torch.uint8, pin_memory=True)
     with region.lend(empty=empty, backup=backup) as loan:
-        a = torch.empty(4 * BLOCK, dtype=torch.uint8, device=dev).fill_(1)
-        cost_a, start_a = cheapest_run(16, empty, set(), 4 * PPB)
-        assert page_of(region, a) == start_a
-        lent = set(range(start_a, start_a + 4 * PPB))
-        b = torch.empty(3 * BLOCK, dtype=torch.uint8, device=dev).fill_(2)  # blocks the first run overwrote are free now
-        cost_b, start_b = cheapest_run(16, empty | {p // PPB for p in lent}, lent, 3 * PPB)
-        assert page_of(region, b) == start_b
+        a = torch.empty(8 * BLOCK, dtype=torch.uint8, device=dev).fill_(1)
+        assert in_region(region, a)
+        b = torch.empty(BLOCK, dtype=torch.uint8, device=dev).fill_(2)  # the data block at the far end
         del a, b
-    # Lending empty blocks first, then the far end, would have backed up 2 blocks (12 and 14) for the first request.
-    assert cost_a == 1 and len(loan.dirty_blocks) == cost_a + cost_b
+    assert loan.touched_blocks == list(empty) + [15] and loan.dirty_blocks == [15] and loan.fallback_peak_bytes == 0
     region.restore(backup, loan.dirty_blocks)
     torch.cuda.synchronize()
     blocks, ref = region.tensor.view(16, -1), before.view(16, -1)
@@ -133,7 +112,7 @@ def test_leak_is_detected_and_memory_recovers():
     torch.cuda.empty_cache()
     with region.lend() as loan:  # the whole region can be lent again
         t = torch.empty(region.nbytes, dtype=torch.uint8, device=dev)
-        assert t.data_ptr() == region.tensor.data_ptr()
+        assert in_region(region, t)
         del t
     assert loan.fallback_peak_bytes == 0
 
@@ -141,11 +120,12 @@ def test_leak_is_detected_and_memory_recovers():
 def test_borrower_exceeding_the_region_uses_free_memory():
     region, before = make_region(1024 * MiB)
     with region.lend() as loan:
+        # The fourth takes the region's last 124 MiB and 176 MiB of free device memory.
         tensors = [torch.full((300 * MiB,), i + 1, dtype=torch.uint8, device=dev) for i in range(4)]
-        assert [in_region(region, t) for t in tensors] == [True, True, True, False]
-        assert all(bool((t == i + 1).all()) for i, t in enumerate(tensors))
+        assert all(in_region(region, t) for t in tensors)
+        assert all(bool((t.cpu() == i + 1).all()) for i, t in enumerate(tensors))  # checked on the CPU: no allocation
         del tensors
-    assert loan.fallback_peak_bytes >= 300 * MiB and loan.touched_blocks == list(range(1, 16))
+    assert loan.fallback_peak_bytes == 4 * 300 * MiB - region.nbytes and loan.touched_blocks == list(range(16))
     assert_untouched_identical(region, before, loan)
 
 
@@ -172,7 +152,7 @@ def test_backup_and_restore_give_back_everything(mode):
     if mode == "eager":
         region.save(backup, [b for b in range(16) if b not in empty])
     with region.lend(empty=empty, backup=backup if mode == "lazy" else None) as loan:
-        # Blocks 15, 14 and 3 (empty), then the 4 data blocks nearest the far end: pages 348..447 (blocks 10-13).
+        # Blocks 15, 14 and 3 (empty), then the data blocks nearest the far end: 13, 12, 11 and 4 pages of 10.
         kept = [torch.empty(n, dtype=torch.uint8, device=dev).fill_(1) for n in (64 * MiB, 64 * MiB, 64 * MiB, 200 * MiB)]
         del kept
     assert loan.touched_blocks == [3, 10, 11, 12, 13, 14, 15] and loan.dirty_blocks == [10, 11, 12, 13]

@@ -6,7 +6,6 @@ from memlend import LendableRegion
 
 MiB = 1024**2
 BLOCK = 64 * MiB
-PPB = BLOCK // (2 * MiB)  # pages per block
 dev = torch.device("cuda")
 
 
@@ -38,7 +37,7 @@ def assert_untouched_identical(region, before, loan):
 
 
 def in_region(region, t):
-    return region.tensor.data_ptr() <= t.data_ptr() < region.tensor.data_ptr() + region.nbytes
+    return region._lends(t.data_ptr())
 
 
 class Block(nn.Module):
