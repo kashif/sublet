@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,9 +7,10 @@ name = "memlend"
 version = "0.1.0"
 description = "Lend GPU memory, offload only what's needed."
 readme = "README.md"
+license = "0BSD"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = ["numpy", "torch"]  # torch reads __cuda_array_interface__ through numpy
-# License: not chosen yet, this is the author's call (see README).
 
 [project.optional-dependencies]
 test = ["pytest"]

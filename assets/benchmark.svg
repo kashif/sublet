@@ -1,91 +1,110 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 916 312" width="916" height="312" role="img" aria-label="Seconds per cycle: copy all out and back, memlend first loan, memlend later loans">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 916 312" width="916" height="312" role="img" aria-label="Seconds per cycle, first and later: copy all out and back, and memlend">
 <style>
-svg { --ink: #1a1e26; --muted: #697184; --line: #e3e6ec; --copy: #a3a9b6; --first: #c9d6f7; --later: #2d5bd2; }
+svg { --ink: #1a1e26; --muted: #697184; --line: #e3e6ec; --copy: #8d94a2; --copy-first: #e4e7ec; --first: #c9d6f7;
+      --later: #2d5bd2; }
 @media (prefers-color-scheme: dark) {
-  svg { --ink: #e7e9ee; --muted: #8a92a4; --line: #2b303a; --copy: #5d6472; --first: #2b3a66; --later: #6d8df2; }
+  svg { --ink: #e7e9ee; --muted: #8a92a4; --line: #2b303a; --copy: #6b7280; --copy-first: #262a33; --first: #2b3a66;
+        --later: #6d8df2; }
 }
-.copy { fill: var(--copy); } .first { fill: var(--first); stroke: var(--later); stroke-width: 1.2; } .later { fill: var(--later); }
+.copy { fill: var(--copy); } .copy-first { fill: var(--copy-first); stroke: var(--copy); stroke-width: 1.2; }
+.first { fill: var(--first); stroke: var(--later); stroke-width: 1.2; } .later { fill: var(--later); }
 .grid { stroke: var(--line); stroke-width: 1; }
 .t { font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--muted); }
 .v { font: 500 10.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--ink); }
 .h { font: 600 13px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--ink); }
 </style>
-<rect x="40" y="10" width="14" height="14" rx="2.5" class="copy"/>
-<text x="61" y="21" class="t">copy all out and back</text>
-<rect x="234" y="10" width="14" height="14" rx="2.5" class="first"/>
-<text x="255" y="21" class="t">memlend, first loan</text>
-<rect x="414" y="10" width="14" height="14" rx="2.5" class="later"/>
-<text x="435" y="21" class="t">memlend, later loans</text>
+<rect x="40" y="10" width="14" height="14" rx="2.5" class="copy-first"/>
+<text x="61" y="21" class="t">copy all, first cycle</text>
+<rect x="223.70000000000002" y="10" width="14" height="14" rx="2.5" class="copy"/>
+<text x="244.70000000000002" y="21" class="t">copy all, later cycles</text>
+<rect x="414.1" y="10" width="14" height="14" rx="2.5" class="first"/>
+<text x="435.1" y="21" class="t">memlend, first loan</text>
+<rect x="584.4000000000001" y="10" width="14" height="14" rx="2.5" class="later"/>
+<text x="605.4000000000001" y="21" class="t">memlend, later loans</text>
 <text x="40" y="48" class="h">H100, 70 GiB tensor, 21 GiB of it kept</text>
 <line x1="40" x2="440" y1="270.0" y2="270.0" class="grid"/>
 <text x="34" y="274.0" class="t" text-anchor="end">0 s</text>
-<line x1="40" x2="440" y1="220.0" y2="220.0" class="grid"/>
-<text x="34" y="224.0" class="t" text-anchor="end">5 s</text>
-<line x1="40" x2="440" y1="170.0" y2="170.0" class="grid"/>
-<text x="34" y="174.0" class="t" text-anchor="end">10 s</text>
-<line x1="40" x2="440" y1="120.0" y2="120.0" class="grid"/>
-<text x="34" y="124.0" class="t" text-anchor="end">15 s</text>
+<line x1="40" x2="440" y1="230.0" y2="230.0" class="grid"/>
+<text x="34" y="234.0" class="t" text-anchor="end">20 s</text>
+<line x1="40" x2="440" y1="190.0" y2="190.0" class="grid"/>
+<text x="34" y="194.0" class="t" text-anchor="end">40 s</text>
+<line x1="40" x2="440" y1="150.0" y2="150.0" class="grid"/>
+<text x="34" y="154.0" class="t" text-anchor="end">60 s</text>
+<line x1="40" x2="440" y1="110.0" y2="110.0" class="grid"/>
+<text x="34" y="114.0" class="t" text-anchor="end">80 s</text>
 <line x1="40" x2="440" y1="70.0" y2="70.0" class="grid"/>
-<text x="34" y="74.0" class="t" text-anchor="end">20 s</text>
-<rect x="76.0" y="107.15887313010171" width="24" height="162.8411268698983" class="copy"><title>16.28 s</title></rect>
-<text x="88.0" y="102.15887313010171" class="v" text-anchor="middle">16.3</text>
-<rect x="104.0" y="261.0032238299027" width="24" height="8.996776170097291" class="first"><title>0.90 s</title></rect>
-<text x="116.0" y="256.0032238299027" class="v" text-anchor="middle">0.90</text>
-<rect x="132.0" y="268.5" width="24" height="1.5" class="later"><title>0.02 s</title></rect>
-<text x="144.0" y="263.5" class="v" text-anchor="middle">0.02</text>
-<text x="116.0" y="288" class="t" text-anchor="middle">job 17 GiB</text>
-<text x="116.0" y="302" class="t" text-anchor="middle">24% of the tensor</text>
-<rect x="200.0" y="105.22606554004597" width="24" height="164.77393445995403" class="copy"><title>16.48 s</title></rect>
-<text x="212.0" y="100.22606554004597" class="v" text-anchor="middle">16.5</text>
-<rect x="228.0" y="236.21219213993754" width="24" height="33.78780786006246" class="first"><title>3.38 s</title></rect>
-<text x="240.0" y="231.21219213993754" class="v" text-anchor="middle">3.38</text>
-<rect x="256.0" y="268.5" width="24" height="1.5" class="later"><title>0.06 s</title></rect>
-<text x="268.0" y="263.5" class="v" text-anchor="middle">0.06</text>
+<text x="34" y="74.0" class="t" text-anchor="end">100 s</text>
+<rect x="60.0" y="87.36550597194582" width="22" height="182.63449402805418" class="copy-first"><title>91.32 s</title></rect>
+<text x="71.0" y="82.36550597194582" class="v" text-anchor="middle">91.3</text>
+<rect x="86.0" y="237.6278336539399" width="22" height="32.37216634606011" class="copy"><title>16.19 s</title></rect>
+<text x="97.0" y="232.6278336539399" class="v" text-anchor="middle">16.2</text>
+<rect x="112.0" y="268.235668214038" width="22" height="1.7643317859619856" class="first"><title>0.88 s</title></rect>
+<text x="123.0" y="263.235668214038" class="v" text-anchor="middle">0.88</text>
+<rect x="138.0" y="268.5" width="22" height="1.5" class="later"><title>0.02 s</title></rect>
+<text x="149.0" y="263.5" class="v" text-anchor="middle">0.02</text>
+<text x="110.0" y="288" class="t" text-anchor="middle">job 17 GiB</text>
+<text x="110.0" y="302" class="t" text-anchor="middle">24% of the tensor</text>
+<rect x="190.0" y="86.621172241983" width="22" height="183.378827758017" class="copy-first"><title>91.69 s</title></rect>
+<text x="201.0" y="81.621172241983" class="v" text-anchor="middle">91.7</text>
+<rect x="216.0" y="237.27222177793738" width="22" height="32.727778222062625" class="copy"><title>16.36 s</title></rect>
+<text x="227.0" y="232.27222177793738" class="v" text-anchor="middle">16.4</text>
+<rect x="242.0" y="264.77603165991604" width="22" height="5.223968340083957" class="first"><title>2.61 s</title></rect>
+<text x="253.0" y="259.77603165991604" class="v" text-anchor="middle">2.61</text>
+<rect x="268.0" y="268.5" width="22" height="1.5" class="later"><title>0.06 s</title></rect>
+<text x="279.0" y="263.5" class="v" text-anchor="middle">0.06</text>
 <text x="240.0" y="288" class="t" text-anchor="middle">job 52 GiB</text>
 <text x="240.0" y="302" class="t" text-anchor="middle">74% of the tensor</text>
-<rect x="324.0" y="104.11347199988086" width="24" height="165.88652800011914" class="copy"><title>16.59 s</title></rect>
-<text x="336.0" y="99.11347199988086" class="v" text-anchor="middle">16.6</text>
-<rect x="352.0" y="137.69845621980494" width="24" height="132.30154378019506" class="first"><title>13.23 s</title></rect>
-<text x="364.0" y="132.69845621980494" class="v" text-anchor="middle">13.2</text>
-<rect x="380.0" y="234.70944308995968" width="24" height="35.29055691004032" class="later"><title>3.53 s</title></rect>
-<text x="392.0" y="229.70944308995968" class="v" text-anchor="middle">3.53</text>
-<text x="364.0" y="288" class="t" text-anchor="middle">job 70 GiB</text>
-<text x="364.0" y="302" class="t" text-anchor="middle">100% of the tensor</text>
+<rect x="320.0" y="85.99353529594373" width="22" height="184.00646470405627" class="copy-first"><title>92.00 s</title></rect>
+<text x="331.0" y="80.99353529594373" class="v" text-anchor="middle">92.0</text>
+<rect x="346.0" y="237.03595664992463" width="22" height="32.96404335007537" class="copy"><title>16.48 s</title></rect>
+<text x="357.0" y="232.03595664992463" class="v" text-anchor="middle">16.5</text>
+<rect x="372.0" y="244.00037369399797" width="22" height="25.99962630600203" class="first"><title>13.00 s</title></rect>
+<text x="383.0" y="239.00037369399797" class="v" text-anchor="middle">13.0</text>
+<rect x="398.0" y="263.0979722959455" width="22" height="6.90202770405449" class="later"><title>3.45 s</title></rect>
+<text x="409.0" y="258.0979722959455" class="v" text-anchor="middle">3.45</text>
+<text x="370.0" y="288" class="t" text-anchor="middle">job 70 GiB</text>
+<text x="370.0" y="302" class="t" text-anchor="middle">100% of the tensor</text>
 <text x="506" y="48" class="h">B200, 169 GiB tensor, 51 GiB of it kept</text>
 <line x1="506" x2="906" y1="270.0" y2="270.0" class="grid"/>
 <text x="500" y="274.0" class="t" text-anchor="end">0 s</text>
 <line x1="506" x2="906" y1="230.0" y2="230.0" class="grid"/>
-<text x="500" y="234.0" class="t" text-anchor="end">5 s</text>
+<text x="500" y="234.0" class="t" text-anchor="end">20 s</text>
 <line x1="506" x2="906" y1="190.0" y2="190.0" class="grid"/>
-<text x="500" y="194.0" class="t" text-anchor="end">10 s</text>
+<text x="500" y="194.0" class="t" text-anchor="end">40 s</text>
 <line x1="506" x2="906" y1="150.0" y2="150.0" class="grid"/>
-<text x="500" y="154.0" class="t" text-anchor="end">15 s</text>
+<text x="500" y="154.0" class="t" text-anchor="end">60 s</text>
 <line x1="506" x2="906" y1="110.0" y2="110.0" class="grid"/>
-<text x="500" y="114.0" class="t" text-anchor="end">20 s</text>
+<text x="500" y="114.0" class="t" text-anchor="end">80 s</text>
 <line x1="506" x2="906" y1="70.0" y2="70.0" class="grid"/>
-<text x="500" y="74.0" class="t" text-anchor="end">25 s</text>
-<rect x="542.0" y="215.45116945612244" width="24" height="54.54883054387756" class="copy"><title>6.82 s</title></rect>
-<text x="554.0" y="210.45116945612244" class="v" text-anchor="middle">6.82</text>
-<rect x="570.0" y="259.3682502398733" width="24" height="10.631749760126695" class="first"><title>1.33 s</title></rect>
-<text x="582.0" y="254.3682502398733" class="v" text-anchor="middle">1.33</text>
-<rect x="598.0" y="268.5" width="24" height="1.5" class="later"><title>0.03 s</title></rect>
-<text x="610.0" y="263.5" class="v" text-anchor="middle">0.03</text>
-<text x="582.0" y="288" class="t" text-anchor="middle">job 42 GiB</text>
-<text x="582.0" y="302" class="t" text-anchor="middle">25% of the tensor</text>
-<rect x="666.0" y="213.89933451195247" width="24" height="56.100665488047525" class="copy"><title>7.01 s</title></rect>
-<text x="678.0" y="208.89933451195247" class="v" text-anchor="middle">7.01</text>
-<rect x="694.0" y="240.16811631200835" width="24" height="29.83188368799165" class="first"><title>3.73 s</title></rect>
-<text x="706.0" y="235.16811631200835" class="v" text-anchor="middle">3.73</text>
-<rect x="722.0" y="268.5" width="24" height="1.5" class="later"><title>0.09 s</title></rect>
-<text x="734.0" y="263.5" class="v" text-anchor="middle">0.09</text>
+<text x="500" y="74.0" class="t" text-anchor="end">100 s</text>
+<rect x="526.0" y="88.81063061201712" width="22" height="181.18936938798288" class="copy-first"><title>90.59 s</title></rect>
+<text x="537.0" y="83.81063061201712" class="v" text-anchor="middle">90.6</text>
+<rect x="552.0" y="256.3848477820284" width="22" height="13.615152217971627" class="copy"><title>6.81 s</title></rect>
+<text x="563.0" y="251.38484778202837" class="v" text-anchor="middle">6.81</text>
+<rect x="578.0" y="267.4640819240012" width="22" height="2.5359180759987794" class="first"><title>1.27 s</title></rect>
+<text x="589.0" y="262.4640819240012" class="v" text-anchor="middle">1.27</text>
+<rect x="604.0" y="268.5" width="22" height="1.5" class="later"><title>0.03 s</title></rect>
+<text x="615.0" y="263.5" class="v" text-anchor="middle">0.03</text>
+<text x="576.0" y="288" class="t" text-anchor="middle">job 42 GiB</text>
+<text x="576.0" y="302" class="t" text-anchor="middle">25% of the tensor</text>
+<rect x="656.0" y="88.7909772139974" width="22" height="181.2090227860026" class="copy-first"><title>90.60 s</title></rect>
+<text x="667.0" y="83.7909772139974" class="v" text-anchor="middle">90.6</text>
+<rect x="682.0" y="256.02247380197514" width="22" height="13.977526198024862" class="copy"><title>6.99 s</title></rect>
+<text x="693.0" y="251.02247380197514" class="v" text-anchor="middle">6.99</text>
+<rect x="708.0" y="262.8540814279695" width="22" height="7.145918572030496" class="first"><title>3.57 s</title></rect>
+<text x="719.0" y="257.8540814279695" class="v" text-anchor="middle">3.57</text>
+<rect x="734.0" y="268.5" width="22" height="1.5" class="later"><title>0.09 s</title></rect>
+<text x="745.0" y="263.5" class="v" text-anchor="middle">0.09</text>
 <text x="706.0" y="288" class="t" text-anchor="middle">job 126 GiB</text>
 <text x="706.0" y="302" class="t" text-anchor="middle">75% of the tensor</text>
-<rect x="790.0" y="212.52360449591652" width="24" height="57.476395504083484" class="copy"><title>7.18 s</title></rect>
-<text x="802.0" y="207.52360449591652" class="v" text-anchor="middle">7.18</text>
-<rect x="818.0" y="98.5863728239201" width="24" height="171.4136271760799" class="first"><title>21.43 s</title></rect>
-<text x="830.0" y="93.5863728239201" class="v" text-anchor="middle">21.4</text>
-<rect x="846.0" y="248.5025619280059" width="24" height="21.49743807199411" class="later"><title>2.69 s</title></rect>
-<text x="858.0" y="243.5025619280059" class="v" text-anchor="middle">2.69</text>
-<text x="830.0" y="288" class="t" text-anchor="middle">job 169 GiB</text>
-<text x="830.0" y="302" class="t" text-anchor="middle">100% of the tensor</text>
+<rect x="786.0" y="88.37292083003558" width="22" height="181.62707916996442" class="copy-first"><title>90.81 s</title></rect>
+<text x="797.0" y="83.37292083003558" class="v" text-anchor="middle">90.8</text>
+<rect x="812.0" y="255.64333298400743" width="22" height="14.35666701599257" class="copy"><title>7.18 s</title></rect>
+<text x="823.0" y="250.64333298400743" class="v" text-anchor="middle">7.18</text>
+<rect x="838.0" y="228.57547444396187" width="22" height="41.424525556038134" class="first"><title>20.71 s</title></rect>
+<text x="849.0" y="223.57547444396187" class="v" text-anchor="middle">20.7</text>
+<rect x="864.0" y="264.749267407984" width="22" height="5.250732592015993" class="later"><title>2.63 s</title></rect>
+<text x="875.0" y="259.749267407984" class="v" text-anchor="middle">2.63</text>
+<text x="836.0" y="288" class="t" text-anchor="middle">job 169 GiB</text>
+<text x="836.0" y="302" class="t" text-anchor="middle">100% of the tensor</text>
 </svg>

@@ -52,11 +52,11 @@ of 25%, 75% or 100% of that size with random numbers: the first fits in the free
 needs the free GPU memory, the third also needs kept data. Next to the full tensor, the job only finds the 8 GiB left
 and runs out of memory. Time per cycle (make room, run the job, get the data back):
 
-![Seconds per cycle on H100 and B200: copy all out and back, memlend first loan, memlend later loans](assets/benchmark.svg)
+![Seconds per cycle on H100 and B200, first and later: copy all out and back, and memlend](assets/benchmark.svg)
 
-Copy all moves the whole tensor out and back (140 and 338 GiB). The first loan maps the job's memory and pins CPU
-memory for the kept data it copies; later loans reuse both. The H100 host link is slow here (7 GB/s out, 14 GB/s in;
-B200: 57 and 55 GB/s).
+Copy all moves the whole tensor out and back (140 and 338 GiB); its first cycle also pins that much CPU memory. memlend's
+first loan maps the job's memory and pins CPU memory only for the kept data it copies; later loans reuse both. The H100
+host link is slow here (7 GB/s out, 14 GB/s in; B200: 57 and 55 GB/s).
 
 ## Compatibility
 
@@ -72,4 +72,8 @@ torch versions and `backend:cudaMallocAsync` are refused; `MEMLEND_SKIP_TORCH_CH
 - The owner must not use the tensor during a loan, and one loan per device runs at a time.
 - Memory the borrower keeps after the loan (state created during it, variables still referenced, CUDA graphs captured in
   it on torch before 2.14) raises `LeakError`: create long-lived state before lending.
-- Linux and CUDA only. License: not chosen yet.
+- Linux and CUDA only.
+
+## License
+
+[0BSD](LICENSE): use it for anything, no conditions.

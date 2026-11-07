@@ -4,7 +4,10 @@ The tensor takes all free GPU memory but 8 GiB, in rows of 1 GiB; a share of the
 job fills one tensor of a given share of that size (--job) with random numbers and sums it. Time per cycle:
 
 - copy-all: copy the whole tensor to pinned CPU memory, free it, run the job, allocate it again and copy it back.
-- memlend: lend the tensor keeping the data rows. The first loan is timed apart; later ones are the median of --reps.
+- memlend: lend the tensor keeping the data rows.
+
+The first cycle of each is timed apart (it pins CPU memory, and memlend maps the job's memory); later ones are the
+median of --reps.
 
     python benchmark.py --data 0.3 --job 0.25 0.75 1.0 --out results.jsonl
 """
@@ -53,14 +56,16 @@ def main():
 
     rows = (torch.cuda.mem_get_info()[0] - 8 * GiB) // GiB
     data = sorted(random.Random(0).sample(range(rows), round(rows * args.data)))
-    host = torch.empty(rows * GiB, dtype=torch.uint8, pin_memory=True)
 
     for share in args.job:
         size = int(share * rows) * GiB
         owner = torch.empty(rows * GiB, dtype=torch.uint8, device=dev)
+        host = None
 
         def copy_all():
-            nonlocal owner
+            nonlocal owner, host
+            if host is None:
+                host = torch.empty(rows * GiB, dtype=torch.uint8, pin_memory=True)
             host.copy_(owner, non_blocking=True)
             torch.cuda.synchronize()
             del owner
@@ -70,9 +75,10 @@ def main():
             owner = torch.empty(rows * GiB, dtype=torch.uint8, device=dev)
             owner.copy_(host, non_blocking=True)
 
-        copy_all_s = statistics.median(timed(copy_all)[0] for _ in range(args.reps))
-        del owner
+        copies = [timed(copy_all)[0] for _ in range(args.reps + 1)]
+        del owner, host
         torch.cuda.empty_cache()
+        torch._C._host_emptyCache()  # so that the next first cycle pins its CPU memory again
 
         cache = memlend.empty(rows, GiB, dtype=torch.uint8)
         cache.view(torch.int64).random_()
@@ -86,7 +92,8 @@ def main():
             "tensor_gib": rows,
             "data_gib": len(data),
             "job_gib": size / GiB,
-            "copy_all_s": copy_all_s,
+            "copy_all_first_s": copies[0],
+            "copy_all_s": statistics.median(copies[1:]),
             "memlend_first_s": loans[0][0],
             "memlend_s": statistics.median(t for t, _ in loans[1:]),
             "memlend_copied_gib": 2 * loans[-1][1].copied_bytes / GiB,
