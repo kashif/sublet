@@ -59,8 +59,8 @@ B200: 57 and 55 GB/s).
 
 ## Compatibility
 
-Tested with torch 2.8 to 2.15 on Python 3.10 to 3.13 (B200, two of them for NCCL; H100 on torch 2.8, 2.12 and 2.13),
-with the default allocator settings, and with `max_split_size_mb` and `expandable_segments:True` on torch 2.15. Other
+Tested with torch 2.8 to 2.15 on Python 3.10 to 3.13 (torch 2.15 has no Python 3.10 build), on T4, A10G, L4, L40S,
+A100, H100, H200, B200 and RTX PRO 6000, on two GPUs for NCCL (A10G, H200, B200), and with `max_split_size_mb`. Other
 torch versions and `backend:cudaMallocAsync` are refused; `MEMLEND_SKIP_TORCH_CHECK=1` bypasses the version check.
 
 ## Limitations
