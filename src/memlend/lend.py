@@ -30,8 +30,7 @@ def _load():
         lib.memlend_destroy.argtypes = [p]
         lib.memlend_base.argtypes, lib.memlend_base.restype = [p], ctypes.c_uint64
         lib.memlend_begin.argtypes, lib.memlend_begin.restype = [p, p], ctypes.c_int
-        lib.memlend_end.argtypes, lib.memlend_end.restype = [p, p], ctypes.c_int64
-        lib.memlend_extra_bytes.argtypes, lib.memlend_extra_bytes.restype = [p], ctypes.c_int64
+        lib.memlend_end.argtypes, lib.memlend_end.restype = [p, p, ctypes.c_int], ctypes.c_int64
         lib.memlend_extra_peak.argtypes, lib.memlend_extra_peak.restype = [p], ctypes.c_int64
         _allocator = _compat.pluggable_allocator(spec.origin)
         _lib = lib
@@ -42,8 +41,7 @@ class _Region:
     """The memory behind a tensor made by `empty`, exposed through `__cuda_array_interface__`.
 
     memlend maps it page by page itself, so that it can map the same pages into the borrower's segments. It lives as long
-    as a tensor view of it. The borrower's segments live in `pool` from one loan to the next, unless they hold memory
-    beyond the tensor.
+    as a tensor view of it. The borrower's segments live in `pool` from one loan to the next.
     """
 
     def __init__(self, nbytes, device):
@@ -89,8 +87,9 @@ def empty(*size, dtype=None, device=None) -> torch.Tensor:
 def lend(tensor: torch.Tensor, keep=None) -> "Loan":
     """Context manager: inside it, every CUDA allocation on the tensor's device may use the tensor's memory.
 
-    When it exits, what `keep` covers is back, bit-identical, and the rest of the tensor may have changed. Only the kept
-    memory the borrower actually used is copied to the CPU and back. The owner must not use the tensor inside, and
+    When it exits, what `keep` covers is back, bit-identical, and the rest of the tensor may have changed. The borrower
+    gets the tensor's memory that is not kept first, then free GPU memory, then kept memory, which is copied to the CPU
+    and back. The owner must not use the tensor inside, and
     everything allocated inside must be freed by the end (else `LeakError`).
 
     Args:
@@ -128,7 +127,10 @@ class Loan:
         torch.cuda.synchronize(device)  # the owner's last kernels may still use the memory
         keep = self.keep.to(torch.uint8)  # alive during the call
         if _lib.memlend_begin(region.handle, keep.data_ptr()) != 0:
-            raise torch.OutOfMemoryError("memlend could not allocate pinned CPU memory to copy the kept data")
+            # The memory the borrower had beyond the tensor is gone, or pinned CPU memory ran out: start from no segments.
+            region.pool = _compat.new_pool(_allocator, device)
+            if _lib.memlend_begin(region.handle, keep.data_ptr()) != 0:
+                raise torch.OutOfMemoryError("memlend could not allocate pinned CPU memory to copy the kept data")
         _compat.route_everything_to(region.pool, device)
         _active[device.index] = self
         return self
@@ -144,10 +146,9 @@ class Loan:
             live = _compat.live_blocks(region.pool)
         del _active[device.index]
         _dropped[:] = [item for item in _dropped if item[0] != device.index]
-        self.copied_bytes = _lib.memlend_end(region.handle, torch.cuda.current_stream(device).cuda_stream)
+        # Restores the kept data and, unless allocations leaked into it, gives back the memory taken beyond the tensor.
+        self.copied_bytes = _lib.memlend_end(region.handle, torch.cuda.current_stream(device).cuda_stream, not live)
         self.extra_bytes = _lib.memlend_extra_peak(region.handle)
-        if _lib.memlend_extra_bytes(region.handle):  # give back the memory taken beyond the tensor: a new pool
-            region.pool = _compat.new_pool(_allocator, device)
         self.region = None  # a finished loan does not keep the tensor alive
         if live and exc_type is None:
             raise LeakError(_leak_message(live))

@@ -1,3 +1,5 @@
+import contextlib
+
 import pytest
 import torch
 import torch.nn as nn
@@ -24,6 +26,17 @@ def make_cache(rows=16, device=dev):
     cache = memlend.empty(rows, ROW, dtype=torch.uint8, device=device)
     cache.view(torch.int64).random_()
     return cache, cache.clone()
+
+
+@contextlib.contextmanager
+def gpu_filled(leave):
+    """Inside, all free GPU memory but about `leave` bytes is taken."""
+    blocker = torch.empty(torch.cuda.mem_get_info()[0] - leave, dtype=torch.uint8, device=dev)
+    try:
+        yield
+    finally:
+        del blocker
+        torch.cuda.empty_cache()
 
 
 def from_cache(cache, t):

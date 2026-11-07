@@ -27,8 +27,7 @@ def test_concurrent_loans_on_two_devices():
     for c in caches:
         c.view(torch.int64).random_()
     before = [c.clone() for c in caches]
-    with memlend.lend(caches[0]) as loan0, memlend.lend(caches[1]) as loan1:
+    with memlend.lend(caches[0]), memlend.lend(caches[1]):
         for d in (0, 1):
             torch.empty(100 * MiB, dtype=torch.uint8, device=d).fill_(d + 1)
-    assert loan0.copied_bytes == loan1.copied_bytes == 100 * MiB
     assert all(torch.equal(c, b) for c, b in zip(caches, before))

@@ -5,7 +5,7 @@ import pytest
 import torch
 
 import memlend
-from conftest import ROW, MiB, autograd_step, dev, from_cache, make_cache, make_model
+from conftest import ROW, MiB, autograd_step, dev, from_cache, gpu_filled, make_cache, make_model
 
 
 def test_free_rows_are_lent_before_kept_ones():
@@ -20,13 +20,16 @@ def test_free_rows_are_lent_before_kept_ones():
     assert all(torch.equal(cache[i], before[i]) for i in odd)
 
 
-@pytest.mark.parametrize("keep, copied", [(None, 300 * MiB), ([], 0)], ids=["everything", "nothing"])
-def test_kept_memory_the_borrower_uses_is_copied(keep, copied):
-    cache, before = make_cache()
-    with memlend.lend(cache, keep=keep) as loan:
-        torch.empty(300 * MiB, dtype=torch.uint8, device=dev).fill_(1)
-    assert loan.copied_bytes == copied and loan.extra_bytes == 0
-    assert torch.equal(cache, before) == (keep is None)
+def test_free_gpu_memory_goes_before_kept_memory():
+    cache, before = make_cache()  # all of it kept
+    with gpu_filled(4 * ROW):
+        free = torch.cuda.mem_get_info()[0]
+        size = (free + 2 * ROW) // (2 * MiB) * (2 * MiB)  # more than the GPU has left
+        with memlend.lend(cache) as loan:
+            torch.empty(size, dtype=torch.uint8, device=dev).fill_(1)
+        assert torch.cuda.mem_get_info()[0] >= free - 16 * MiB  # the GPU memory was given back
+    assert loan.extra_bytes + loan.copied_bytes == size and loan.extra_bytes >= free // 2 and loan.copied_bytes >= 2 * ROW
+    assert torch.equal(cache, before)
 
 
 def test_strided_views_keep_only_their_pages():
@@ -34,8 +37,10 @@ def test_strided_views_keep_only_their_pages():
     cache.view(torch.int64).random_()
     before = cache.clone()
     with memlend.lend(cache, keep=cache[:, 3]) as loan:  # block 3 of every layer
-        torch.empty(cache.numel(), dtype=torch.uint8, device=dev).fill_(1)
-    assert loan.copied_bytes == 4 * 2 * MiB and torch.equal(cache[:, 3], before[:, 3])
+        torch.empty(28 * 2 * MiB, dtype=torch.uint8, device=dev).fill_(1)  # as much as the other blocks
+    others = [b for b in range(8) if b != 3]
+    assert loan.copied_bytes == 0 and loan.extra_bytes == 0 and bool((cache[:, others] == 1).all())
+    assert torch.equal(cache[:, 3], before[:, 3])
 
 
 def test_lend_and_keep_need_views_of_a_lendable_tensor():
@@ -56,23 +61,34 @@ def test_later_loans_reuse_the_borrowers_memory():
     assert loan.copied_bytes == 4 * ROW and torch.equal(cache, before)
 
 
-def test_borrower_exceeding_the_tensor_uses_free_memory():
+def test_memory_beyond_the_tensor_is_given_back_between_loans():
     cache, _ = make_cache()
-    with memlend.lend(cache, keep=[]) as loan:
-        # The fourth takes the last 124 MiB of the tensor and 176 MiB of free device memory.
-        tensors = [torch.full((300 * MiB,), i + 1, dtype=torch.uint8, device=dev) for i in range(4)]
-        assert all(from_cache(cache, t) for t in tensors)
-        assert all(bool((t.cpu() == i + 1).all()) for i, t in enumerate(tensors))  # checked on the CPU: no allocation
+    free = torch.cuda.mem_get_info()[0]
+    for _ in range(2):  # the second loan takes that memory again
+        with memlend.lend(cache, keep=[]) as loan:
+            # The fourth takes the last 124 MiB of the tensor and 176 MiB of free GPU memory.
+            tensors = [torch.full((300 * MiB,), i + 1, dtype=torch.uint8, device=dev) for i in range(4)]
+            assert all(from_cache(cache, t) for t in tensors)
+            assert all(bool((t.cpu() == i + 1).all()) for i, t in enumerate(tensors))  # on the CPU: no allocation
+            del tensors
+        assert loan.extra_bytes == 4 * 300 * MiB - cache.numel()
+        assert torch.cuda.mem_get_info()[0] >= free - 16 * MiB
+
+
+def test_memory_beyond_the_tensor_taken_meanwhile():
+    cache, _ = make_cache()
+    with memlend.lend(cache, keep=[]):
+        tensors = [torch.empty(300 * MiB, dtype=torch.uint8, device=dev) for _ in range(4)]  # 176 MiB beyond the tensor
         del tensors
-    assert loan.extra_bytes == 4 * 300 * MiB - cache.numel()
-    with memlend.lend(cache, keep=[]) as loan:  # the memory beyond the tensor was given back
-        torch.empty(cache.numel(), dtype=torch.uint8, device=dev)
+    with gpu_filled(128 * MiB):  # someone else takes that memory between loans
+        with memlend.lend(cache, keep=[]) as loan:  # the borrower's memory starts over, inside the tensor
+            torch.empty(600 * MiB, dtype=torch.uint8, device=dev).fill_(1)
     assert loan.extra_bytes == 0
 
 
 def test_kept_memory_comes_back_after_an_exception():
     cache, before = make_cache()
-    with pytest.raises(torch.OutOfMemoryError):
+    with gpu_filled(2 * ROW), pytest.raises(torch.OutOfMemoryError):  # so that the borrower takes kept memory
         with memlend.lend(cache):
             x = torch.empty(4 * ROW, dtype=torch.uint8, device=dev).fill_(1)
             torch.empty(1024**5, dtype=torch.uint8, device=dev)
@@ -92,7 +108,7 @@ def test_borrower_using_autograd_matches_reference():
             losses.append(autograd_step(model, update, tokens, cache))
     assert losses == ref_losses
     assert all(torch.equal(p, q) for p, q in zip(model.parameters(), ref_model.parameters()))
-    assert loan.copied_bytes and loan.extra_bytes == 0 and torch.equal(cache, before)
+    assert torch.equal(cache, before)
 
 
 def test_side_streams_and_cublas_workspaces():
@@ -120,10 +136,20 @@ def test_leak_is_detected_and_memory_recovers():
             kept.append(torch.empty(10 * MiB, dtype=torch.uint8, device=dev))
     assert torch.equal(cache, before)  # restored all the same
     kept.clear()
-    with memlend.lend(cache, keep=[]) as loan:  # the leaked memory is lent again
+    with memlend.lend(cache):  # freed now: no LeakError
         torch.empty(10 * MiB, dtype=torch.uint8, device=dev)
-        torch.empty(cache.numel() - 10 * MiB, dtype=torch.uint8, device=dev)
-    assert loan.extra_bytes == 0
+
+
+def test_tensor_dropped_before_its_leaked_allocation():
+    cache, _ = make_cache(4)
+    kept = []
+    with pytest.raises(memlend.LeakError):
+        with memlend.lend(cache):
+            kept.append(torch.empty(10 * MiB, dtype=torch.uint8, device=dev).fill_(1))
+    del cache
+    assert bool((kept[0] == 1).all())  # still valid
+    kept.clear()
+    torch.cuda.empty_cache()  # frees the last segment, then the tensor's memory
 
 
 def test_cuda_graph_captured_on_the_owners_tensor_stays_valid():
@@ -142,12 +168,13 @@ def test_cuda_graph_captured_on_the_owners_tensor_stays_valid():
 
 def test_owner_kernels_still_running_finish_before_the_loan_starts():
     cache, _ = make_cache()
-    with torch.cuda.stream(torch.cuda.Stream()):
-        torch.cuda._sleep(int(5e8))
-        cache[15].fill_(42)  # the owner's last write, still queued when it lends
-    with memlend.lend(cache) as loan:  # lends the last row first
-        torch.empty(ROW, dtype=torch.uint8, device=dev).fill_(1)
-    assert loan.copied_bytes == ROW and bool((cache[15] == 42).all())
+    with gpu_filled(32 * MiB):  # so that the borrower takes kept memory, from the last row
+        with torch.cuda.stream(torch.cuda.Stream()):
+            torch.cuda._sleep(int(5e8))
+            cache[15].fill_(42)  # the owner's last write, still queued when it lends
+        with memlend.lend(cache) as loan:
+            torch.empty(ROW, dtype=torch.uint8, device=dev).fill_(1)
+    assert loan.copied_bytes > 0 and bool((cache[15] == 42).all())
 
 
 def test_tensor_dropped_during_another_loan():

@@ -33,30 +33,29 @@ print(f"copied {loan.copied_bytes} bytes, data intact: {torch.equal(cache[1::2],
 ```
 
 `keep` takes views of the tensor (`cache[3]`, `cache[:, 2:5]`, a list of them) and defaults to all of it; `keep=[]` gets
-nothing back. Each allocation of the borrower gets its own addresses, backed by pages of the tensor wherever they are:
-free pages first, then kept pages, copied to the CPU just before. Beyond the tensor, it uses free GPU memory, given back
-when the loan ends. The borrower's memory stays mapped from one loan to the next, so mapping is paid once. Anything the
-borrower leaves alive raises `LeakError` when the loan ends.
+nothing back. Each allocation of the borrower gets its own addresses, backed by the cheapest memory first: pages of the
+tensor that are not kept (wherever they are), then free GPU memory, then kept pages, copied to the CPU just before. The
+borrower's memory stays mapped from one loan to the next, so mapping is paid once; the free GPU memory it took is given
+back between loans. Anything the borrower leaves alive raises `LeakError` when the loan ends.
 
 ## Benchmark
 
-`benchmark.py`: a tensor taking all free GPU memory but 8 GiB, with a share of its 64 MiB blocks holding data (in 1 GiB
-runs), lent to a job that needs most of the GPU (a forward, backward and update pass of a 0.6B-parameter model). Time per
-cycle (make room, run the job, get the data back) and GiB copied between GPU and CPU.
+`benchmark.py`: a tensor takes all free GPU memory but 8 GiB, and 30% of it holds data to keep. A job fills one tensor
+of 25%, 75% or 100% of that size with random numbers. Next to the full tensor, the job only finds the 8 GiB left, so it
+runs out of memory. Time per cycle (make room, run the job, get the data back):
 
-| GPU, data in the tensor | Job needs | Copy all out and back | Recompute | memlend, first loan | memlend, later loans |
-|---|---|---|---|---|---|
-| H100, 20 of 66 GiB | 15 GiB | 15.5 s (132 GiB) | 1.57 s | 1.11 s | 0.13 s (0 GiB) |
-| H100, 20 of 66 GiB | 59 GiB | 15.9 s (132 GiB) | 1.90 s | 16.6 s | 4.52 s (35.4 GiB) |
-| H100, 3 of 66 GiB | 59 GiB | 19.3 s (132 GiB) | 0.92 s | 4.25 s | 0.55 s (1.4 GiB) |
-| B200, 49 of 165 GiB | 15 GiB | 6.7 s (330 GiB) | 2.12 s | 0.77 s | 0.09 s (0 GiB) |
-| B200, 49 of 165 GiB | 59 GiB | 6.9 s (330 GiB) | 2.27 s | 2.40 s | 0.26 s (0 GiB) |
-| B200, 49 of 165 GiB | 117 GiB | 7.1 s (330 GiB) | 2.52 s | 8.28 s | 0.91 s (22.3 GiB) |
-| B200, 8 of 165 GiB | 117 GiB | 7.1 s (330 GiB) | 1.02 s | 4.32 s | 0.47 s (0 GiB) |
+| GPU, tensor | Job | Copy all out and back | memlend, first loan | memlend, later loans |
+|---|---|---|---|---|
+| H100, 70 GiB | 17 GiB: fits in the free part | 16.3 s | 0.90 s | 0.02 s (0 GiB copied) |
+| H100, 70 GiB | 52 GiB: needs the free GPU memory too | 16.5 s | 3.38 s | 0.06 s (0 GiB) |
+| H100, 70 GiB | 70 GiB: needs kept data too | 16.6 s | 13.2 s | 3.53 s (29.5 GiB) |
+| B200, 169 GiB | 42 GiB | 6.8 s | 1.33 s | 0.03 s (0 GiB) |
+| B200, 169 GiB | 126 GiB | 7.0 s | 3.73 s | 0.09 s (0 GiB) |
+| B200, 169 GiB | 169 GiB | 7.2 s | 21.4 s | 2.69 s (85.8 GiB) |
 
-Doing nothing (running the job next to the full tensor) runs out of memory in every row. The first loan maps the job's
-memory and pins CPU memory for the kept data it copies; later loans reuse both. The H100 host link is slow here (7 GB/s
-out, 14 GB/s in; B200: 57 and 55 GB/s), which is why copying 35 GiB loses to recomputing it in the second row.
+Copy all moves the whole tensor out and back (140 and 338 GiB). The first loan maps the job's memory and pins CPU
+memory for the kept data it copies; later loans reuse both. The H100 host link is slow here (7 GB/s out, 14 GB/s in;
+B200: 57 and 55 GB/s).
 
 ## Compatibility
 

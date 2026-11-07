@@ -31,9 +31,9 @@ def test_per_process_memory_fraction_counts_lent_memory():
     finally:
         torch.cuda.set_per_process_memory_fraction(1.0)
     assert torch.equal(cache, before)
-    with memlend.lend(cache) as loan:  # usable again after the OOM
+    with memlend.lend(cache):  # usable again after the OOM
         torch.empty(400 * MiB, dtype=torch.uint8, device=dev).fill_(1)
-    assert loan.extra_bytes == 0 and torch.equal(cache, before)
+    assert torch.equal(cache, before)
 
 
 def test_empty_cache_inside_loan():
@@ -67,14 +67,13 @@ def test_garbage_cycles_are_collected_before_declaring_a_leak():
 
     gc.disable()
     try:
-        with memlend.lend(cache) as loan:
+        with memlend.lend(cache):  # no LeakError
             a, b = Node(), Node()
             a.other, b.other = b, a
             a.t = torch.empty(10 * MiB, dtype=torch.uint8, device=dev).fill_(1)
             del a, b
     finally:
         gc.enable()
-    assert loan.copied_bytes == 10 * MiB
 
 
 def test_torch_compile_inside_loan():
@@ -90,10 +89,10 @@ def test_torch_compile_inside_loan():
         out.copy_(y.detach())
         mlp.zero_grad(set_to_none=True)
 
-    with memlend.lend(cache) as loan:
+    with memlend.lend(cache):
         borrower()
     torch.testing.assert_close(out, expected, rtol=1e-4, atol=1e-4)
-    assert loan.copied_bytes and torch.equal(cache, before)
+    assert torch.equal(cache, before)
     torch._dynamo.reset()
 
 
