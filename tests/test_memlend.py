@@ -104,7 +104,7 @@ def test_borrower_using_autograd_matches_reference():
     losses = [autograd_step(model, update, tokens)]  # outside a loan: creates the AdamW state
     cache, before = make_cache()
     for _ in range(2):
-        with memlend.lend(cache) as loan:
+        with memlend.lend(cache):
             losses.append(autograd_step(model, update, tokens, cache))
     assert losses == ref_losses
     assert all(torch.equal(p, q) for p, q in zip(model.parameters(), ref_model.parameters()))

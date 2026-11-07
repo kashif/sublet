@@ -10,6 +10,7 @@ job fills one tensor of a given share of that size (--job) with random numbers a
 """
 
 import argparse
+import functools
 import json
 import random
 import statistics
@@ -34,6 +35,12 @@ def timed(fn):
 def job(nbytes):
     x = torch.empty(nbytes // 4, device=dev).normal_()
     return x.sum().item()
+
+
+def lend_and_run(cache, keep, size):
+    with memlend.lend(cache, keep=keep) as loan:
+        job(size)
+    return loan
 
 
 def main():
@@ -72,12 +79,7 @@ def main():
         sums = [cache[i].view(torch.int64).sum() for i in data]
         keep = [cache[i] for i in data]
 
-        def lend():
-            with memlend.lend(cache, keep=keep) as loan:
-                job(size)
-            return loan
-
-        loans = [timed(lend) for _ in range(args.reps + 1)]
+        loans = [timed(functools.partial(lend_and_run, cache, keep, size)) for _ in range(args.reps + 1)]
         assert all(torch.equal(cache[i].view(torch.int64).sum(), s) for i, s in zip(data, sums)), "data not restored"
         row = {
             "gpu": torch.cuda.get_device_name(),
