@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "memlend"
 version = "0.1.0"
-description = "Lend a GPU memory region to arbitrary PyTorch code and learn exactly which blocks it used."
+description = "Lend GPU memory, offload only what's needed."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["numpy", "torch"]  # torch reads __cuda_array_interface__ through numpy

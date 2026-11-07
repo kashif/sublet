@@ -1,9 +1,10 @@
 # memlend
 
-Lend the memory of a GPU tensor to any PyTorch code, and get back the parts you keep.
-While the tensor's owner is paused, any PyTorch code (autograd, several streams, NCCL, `torch.compile`) allocates from
-the tensor's memory. When the loan ends, the parts you keep are back, bit-identical: only the kept memory the borrower
-actually used is copied to the CPU and back.
+**Lend GPU memory, offload only what's needed.**
+
+memlend lends the memory of a GPU tensor to any PyTorch code (autograd, several streams, NCCL, `torch.compile`) while
+the tensor's owner is paused. When the loan ends, the parts you keep are back, bit-identical: only the kept memory the
+borrower actually used went to the CPU and back.
 
 ![GPU memory over time: copying the tensor out and back, or lending it with memlend](assets/lending.svg)
 
