@@ -5,11 +5,11 @@ While the tensor's owner is paused, any PyTorch code (autograd, several streams,
 the tensor's memory. When the loan ends, the parts you keep are back, bit-identical: only the kept memory the borrower
 actually used is copied to the CPU and back.
 
-![GPU memory over time: without memlend the job runs out of memory; with memlend it borrows the tensor's memory](assets/lending.svg)
+![GPU memory over time: copying the tensor out and back, or lending it with memlend](assets/lending.svg)
 
-Each column is the GPU memory at one moment. Without memlend, the job fills the free memory above the owner's tensor
-and runs out. With memlend, it takes the free memory, then the tensor's pages, whose data is copied to the CPU just
-before and back when the loan ends.
+Each column is the GPU memory at one moment. Without memlend, the owner copies its whole tensor to the CPU to make
+room, and back after the job. With memlend, the job takes the free memory, then the tensor's pages it needs, and only
+those are copied out and back.
 
 ## Install
 
@@ -47,17 +47,11 @@ back between loans. Anything the borrower leaves alive raises `LeakError` when t
 ## Benchmark
 
 `benchmark.py`: a tensor takes all free GPU memory but 8 GiB, and 30% of it holds data to keep. A job fills one tensor
-of 25%, 75% or 100% of that size with random numbers. Next to the full tensor, the job only finds the 8 GiB left, so it
-runs out of memory. Time per cycle (make room, run the job, get the data back):
+of 25%, 75% or 100% of that size with random numbers: the first fits in the free part of the tensor, the second also
+needs the free GPU memory, the third also needs kept data. Next to the full tensor, the job only finds the 8 GiB left
+and runs out of memory. Time per cycle (make room, run the job, get the data back):
 
-| GPU, tensor | Job | Copy all out and back | memlend, first loan | memlend, later loans |
-|---|---|---|---|---|
-| H100, 70 GiB | 17 GiB: fits in the free part | 16.3 s | 0.90 s | 0.02 s (0 GiB copied) |
-| H100, 70 GiB | 52 GiB: needs the free GPU memory too | 16.5 s | 3.38 s | 0.06 s (0 GiB) |
-| H100, 70 GiB | 70 GiB: needs kept data too | 16.6 s | 13.2 s | 3.53 s (29.5 GiB) |
-| B200, 169 GiB | 42 GiB | 6.8 s | 1.33 s | 0.03 s (0 GiB) |
-| B200, 169 GiB | 126 GiB | 7.0 s | 3.73 s | 0.09 s (0 GiB) |
-| B200, 169 GiB | 169 GiB | 7.2 s | 21.4 s | 2.69 s (85.8 GiB) |
+![Seconds per cycle on H100 and B200: copy all out and back, memlend first loan, memlend later loans](assets/benchmark.svg)
 
 Copy all moves the whole tensor out and back (140 and 338 GiB). The first loan maps the job's memory and pins CPU
 memory for the kept data it copies; later loans reuse both. The H100 host link is slow here (7 GB/s out, 14 GB/s in;
