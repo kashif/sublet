@@ -76,7 +76,7 @@ int sublet_init(void) {
 }
 
 #define PAGE (2ull * 1024 * 1024)
-#define CHUNK 32  // pages per chunk of pinned CPU memory (64 MiB)
+#define CHUNK 32  // slots per chunk of pinned CPU memory (64 MiB)
 #define MAX_DEVICES 64
 
 typedef struct Region {
@@ -89,7 +89,11 @@ typedef struct Region {
   uint8_t* keep;                        // page holds data the owner gets back after the current loan
   uint8_t* touched;                     // page was lent during the current loan
   uint8_t* want;                        // scratch: pages to copy
-  char** chunks;                        // pinned CPU copy of each chunk of pages, allocated when first needed
+  int64_t* slot;                        // CPU slot holding the copy of each page during a loan, -1 if none
+  char** slot_chunks;                   // pinned CPU memory for the slots, CHUNK slots each, pinned when first needed
+  int64_t nslot_chunks;
+  int64_t* free_slots;                  // stack of the free slots
+  int64_t nfree_slots;
   CUstream copy_stream;
   int64_t extra_bytes, extra_peak;  // new device memory in segments; peak during the current loan
   int64_t nsegments;                // segments made for r and not freed yet
@@ -136,11 +140,11 @@ static void destroy(Region* r) {
     cuMemRelease(r->pages[p]);
   }
   if (r->base) cuMemAddressFree(r->base, r->npages * PAGE);
-  for (int64_t c = 0; c * CHUNK < r->npages; c++)
-    if (r->chunks[c]) cuMemFreeHost(r->chunks[c]);
+  for (int64_t c = 0; c < r->nslot_chunks; c++) cuMemFreeHost(r->slot_chunks[c]);
   if (r->copy_stream) cuStreamDestroy(r->copy_stream);
   cuCtxSetCurrent(previous);
-  free(r->pages), free(r->used), free(r->keep), free(r->touched), free(r->want), free(r->chunks), free(r);
+  free(r->pages), free(r->used), free(r->keep), free(r->touched), free(r->want), free(r->slot), free(r->slot_chunks),
+      free(r->free_slots), free(r);
 }
 
 Region* sublet_create(int device, size_t nbytes) {
@@ -156,7 +160,8 @@ Region* sublet_create(int device, size_t nbytes) {
   r->keep = calloc(r->npages, 1);
   r->touched = calloc(r->npages, 1);
   r->want = calloc(r->npages, 1);
-  r->chunks = calloc((r->npages + CHUNK - 1) / CHUNK, sizeof(char*));
+  r->slot = malloc(r->npages * sizeof(int64_t));
+  for (int64_t p = 0; p < r->npages; p++) r->slot[p] = -1;
   CUmemAllocationProp prop = device_memory(device);
   int failed = cuStreamCreate(&r->copy_stream, 1 /* CU_STREAM_NON_BLOCKING */) != 0 ||
                cuMemAddressReserve(&r->base, nbytes, 0, 0, 0) != 0;
@@ -203,29 +208,65 @@ void sublet_touched(Region* r, uint8_t* out) {
   pthread_mutex_unlock(&mu);
 }
 
-// Copies the pages in r->want to (to_host) or from their pinned CPU copy on stream, then clears r->want. Returns the
-// number of pages, or -1 if pinned memory for one of them cannot be allocated.
+static char* slot_memory(Region* r, int64_t slot) { return r->slot_chunks[slot / CHUNK] + (slot % CHUNK) * PAGE; }
+
+static int descending(const void* a, const void* b) {
+  int64_t x = *(const int64_t*)a, y = *(const int64_t*)b;
+  return (x < y) - (x > y);
+}
+
+// Gives every page in r->want a free CPU slot, pinning a chunk of CHUNK more slots when none is free. The slots are
+// reused from one loan to the next, so CPU memory grows only to the most a loan copies. Returns -1, the pages left
+// without a slot, if pinned memory runs out.
+static int assign_slots(Region* r) {
+  // Popped from the end, the lowest slot first: consecutive pages get consecutive slots, copied in one go
+  qsort(r->free_slots, r->nfree_slots, sizeof(int64_t), descending);
+  for (int64_t p = 0; p < r->npages; p++) {
+    if (!r->want[p]) continue;
+    if (!r->nfree_slots) {
+      char* chunk;
+      if (cuMemHostAlloc((void**)&chunk, CHUNK * PAGE, 0) != 0) {
+        for (int64_t q = 0; q < p; q++)
+          if (r->want[q]) r->free_slots[r->nfree_slots++] = r->slot[q], r->slot[q] = -1;
+        return -1;
+      }
+      r->slot_chunks = realloc(r->slot_chunks, (r->nslot_chunks + 1) * sizeof(char*));
+      r->slot_chunks[r->nslot_chunks] = chunk;
+      r->free_slots = realloc(r->free_slots, (r->nslot_chunks + 1) * CHUNK * sizeof(int64_t));
+      for (int64_t i = CHUNK - 1; i >= 0; i--) r->free_slots[r->nfree_slots++] = r->nslot_chunks * CHUNK + i;
+      r->nslot_chunks++;
+    }
+    r->slot[p] = r->free_slots[--r->nfree_slots];
+  }
+  return 0;
+}
+
+// Copies the pages in r->want to their CPU slot (to_host), or back from it and frees the slot, on stream, then clears
+// r->want. Returns the number of pages, or -1 if pinned memory runs out.
 static int64_t copy_wanted(Region* r, int to_host, CUstream stream) {
   int64_t n = 0;
+  if (to_host && assign_slots(r) < 0) {
+    memset(r->want, 0, r->npages);
+    return -1;
+  }
   for (int64_t p = 0; p < r->npages;) {
     if (!r->want[p]) {
       p++;
       continue;
     }
-    int64_t c = p / CHUNK, q = p;
-    while (q < r->npages && r->want[q] && q / CHUNK == c) r->want[q++] = 0;
-    if (!r->chunks[c] && cuMemHostAlloc((void**)&r->chunks[c], CHUNK * PAGE, 0) != 0) {
-      r->chunks[c] = NULL;
-      memset(r->want, 0, r->npages);
-      return -1;
-    }
-    char* host = r->chunks[c] + (p % CHUNK) * PAGE;
+    int64_t q = p + 1;  // a run of pages in consecutive slots of one chunk
+    while (q < r->npages && r->want[q] && r->slot[q] == r->slot[q - 1] + 1 && r->slot[q] / CHUNK == r->slot[p] / CHUNK) q++;
     if (to_host)
-      cuMemcpyDtoHAsync(host, r->base + p * PAGE, (q - p) * PAGE, stream);
+      cuMemcpyDtoHAsync(slot_memory(r, r->slot[p]), r->base + p * PAGE, (q - p) * PAGE, stream);
     else
-      cuMemcpyHtoDAsync(r->base + p * PAGE, host, (q - p) * PAGE, stream);
+      cuMemcpyHtoDAsync(r->base + p * PAGE, slot_memory(r, r->slot[p]), (q - p) * PAGE, stream);
     n += q - p;
     p = q;
+  }
+  for (int64_t p = 0; p < r->npages; p++) {
+    // Back on the device: the slot is free for the next copy, which comes after the caller waits for this one
+    if (r->want[p] && !to_host) r->free_slots[r->nfree_slots++] = r->slot[p], r->slot[p] = -1;
+    r->want[p] = 0;
   }
   return n;
 }
