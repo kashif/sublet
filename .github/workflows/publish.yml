@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      contents: read  # to check out the repo
       id-token: write  # trusted publishing: PyPI trusts this workflow, no token needed
     steps:
       - uses: actions/checkout@v4
