@@ -35,7 +35,7 @@ def run_anything():                                    # any PyTorch code
     return (x * x).mean().item()
 
 with sublet.lend(cache, keep=cache[1::2]) as loan:    # odd rows hold data, even rows are free
-    run_anything()                                     # allocates from the even rows
+    run_anything()                                    # allocates from the even rows
 print(f"copied {loan.copied_bytes} bytes, data intact: {torch.equal(cache[1::2], before)}")
 ```
 
