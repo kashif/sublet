@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 906 548" width="906" height="548" role="img" aria-label="GPU memory over time: copying the tensor out and back, or lending it with memlend">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 906 548" width="906" height="548" role="img" aria-label="GPU memory over time: copying the tensor out and back, or lending it with sublet">
 <style>
 svg { --cell: #ffffff; --line: #d3d8e1; --ink: #1a1e26; --muted: #697184; --kept: #2d5bd2; --soft: #a9bdf0;
       --job: #e4742a; --oom: #d0342c; }
@@ -25,7 +25,7 @@ svg { --cell: #ffffff; --line: #d3d8e1; --ink: #1a1e26; --muted: #697184; --kept
 <text x="96" y="221.0" class="t" text-anchor="end">owner's tensor</text>
 <path d="M107 59 H102 V119 H107" class="br"/>
 <text x="96" y="93.0" class="t" text-anchor="end">free</text>
-<text x="112" y="44" class="h" text-anchor="start">Without memlend: copy out, run, copy back</text>
+<text x="112" y="44" class="h" text-anchor="start">Without sublet: copy out, run, copy back</text>
 <rect x="112" y="298" width="14" height="14" rx="2.5" class="kept"/>
 <rect x="112" y="282" width="14" height="14" rx="2.5" class="kept"/>
 <rect x="112" y="266" width="14" height="14" rx="2.5" class="kept"/>
@@ -675,7 +675,7 @@ svg { --cell: #ffffff; --line: #d3d8e1; --ink: #1a1e26; --muted: #697184; --kept
 <line x1="351" x2="351" y1="52" y2="318" class="mark"/>
 <text x="351" y="332" class="t" text-anchor="middle">copy back</text>
 <text x="102" y="446.0" class="t" text-anchor="end">CPU memory</text>
-<text x="528" y="44" class="h" text-anchor="start">With memlend</text>
+<text x="528" y="44" class="h" text-anchor="start">With sublet</text>
 <rect x="528" y="298" width="14" height="14" rx="2.5" class="kept"/>
 <rect x="528" y="282" width="14" height="14" rx="2.5" class="kept"/>
 <rect x="528" y="266" width="14" height="14" rx="2.5" class="kept"/>

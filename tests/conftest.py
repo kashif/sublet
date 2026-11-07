@@ -4,9 +4,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-import memlend
-from memlend import _compat
-from memlend.lend import _regions
+import sublet
+from sublet import _compat
+from sublet.lend import _regions
 
 MiB = 1024**2
 ROW = 64 * MiB
@@ -14,16 +14,16 @@ dev = torch.device("cuda")
 
 
 def pytest_collection_modifyitems(config, items):
-    # Under a non-native allocator backend memlend refuses to run: only the test of that refusal applies.
+    # Under a non-native allocator backend sublet refuses to run: only the test of that refusal applies.
     if torch.cuda.get_allocator_backend() != "native":
         for item in items:
             if "backend" not in item.name:
-                item.add_marker(pytest.mark.skip(reason="memlend needs the native allocator backend"))
+                item.add_marker(pytest.mark.skip(reason="sublet needs the native allocator backend"))
 
 
 def make_cache(rows=16, device=dev):
     """A lendable tensor of `rows` rows of 64 MiB of random bytes, and a copy of it."""
-    cache = memlend.empty(rows, ROW, dtype=torch.uint8, device=device)
+    cache = sublet.empty(rows, ROW, dtype=torch.uint8, device=device)
     cache.view(torch.int64).random_()
     return cache, cache.clone()
 

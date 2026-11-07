@@ -6,15 +6,15 @@ import pytest
 import torch
 import torch.nn as nn
 
-import memlend
+import sublet
 from conftest import MiB, dev, from_cache, make_cache
-from memlend import _compat
+from sublet import _compat
 
 
 @pytest.mark.skipif(torch.cuda.get_allocator_backend() == "native", reason="only under backend:cudaMallocAsync")
 def test_non_native_backend_is_refused():
     with pytest.raises(RuntimeError, match="native CUDA caching allocator"):
-        memlend.empty(64 * MiB, dtype=torch.uint8)
+        sublet.empty(64 * MiB, dtype=torch.uint8)
 
 
 def test_per_process_memory_fraction_counts_lent_memory():
@@ -23,22 +23,22 @@ def test_per_process_memory_fraction_counts_lent_memory():
     total = torch.cuda.get_device_properties(dev).total_memory
     torch.cuda.set_per_process_memory_fraction((torch.cuda.memory_reserved() + 256 * MiB) / total)
     try:
-        with memlend.lend(cache):
+        with sublet.lend(cache):
             torch.empty(200 * MiB, dtype=torch.uint8, device=dev).fill_(1)
         with pytest.raises(torch.OutOfMemoryError):
-            with memlend.lend(cache):
+            with sublet.lend(cache):
                 torch.empty(400 * MiB, dtype=torch.uint8, device=dev)
     finally:
         torch.cuda.set_per_process_memory_fraction(1.0)
     assert torch.equal(cache, before)
-    with memlend.lend(cache):  # usable again after the OOM
+    with sublet.lend(cache):  # usable again after the OOM
         torch.empty(400 * MiB, dtype=torch.uint8, device=dev).fill_(1)
     assert torch.equal(cache, before)
 
 
 def test_empty_cache_inside_loan():
     cache, before = make_cache()
-    with memlend.lend(cache):
+    with sublet.lend(cache):
         torch.empty(100 * MiB, dtype=torch.uint8, device=dev).fill_(1)
         torch.cuda.empty_cache()
         b = torch.empty(300 * MiB, dtype=torch.uint8, device=dev).fill_(2)
@@ -52,8 +52,8 @@ def test_leak_report_names_the_allocation_site():
     kept = []
     torch.cuda.memory._record_memory_history(max_entries=100_000)
     try:
-        with pytest.raises(memlend.LeakError, match="test_workloads.py"):
-            with memlend.lend(cache):
+        with pytest.raises(sublet.LeakError, match="test_workloads.py"):
+            with sublet.lend(cache):
                 kept.append(torch.empty(10 * MiB, dtype=torch.uint8, device=dev))
     finally:
         torch.cuda.memory._record_memory_history(enabled=None)
@@ -67,7 +67,7 @@ def test_garbage_cycles_are_collected_before_declaring_a_leak():
 
     gc.disable()
     try:
-        with memlend.lend(cache):  # no LeakError
+        with sublet.lend(cache):  # no LeakError
             a, b = Node(), Node()
             a.other, b.other = b, a
             a.t = torch.empty(10 * MiB, dtype=torch.uint8, device=dev).fill_(1)
@@ -89,7 +89,7 @@ def test_torch_compile_inside_loan():
         out.copy_(y.detach())
         mlp.zero_grad(set_to_none=True)
 
-    with memlend.lend(cache):
+    with sublet.lend(cache):
         borrower()
     torch.testing.assert_close(out, expected, rtol=1e-4, atol=1e-4)
     assert torch.equal(cache, before)
@@ -115,7 +115,7 @@ def test_cuda_graph_capture_and_replay_inside_loan():
             graph.replay()
             out[i].copy_(static_out)
 
-    with memlend.lend(cache):
+    with sublet.lend(cache):
         borrower()
     for i in range(3):
         torch.testing.assert_close(out[i], ((x * (i + 1)) @ (x * (i + 1))).relu())
@@ -135,11 +135,11 @@ def test_cuda_graph_captured_inside_loan_and_kept():
 
     if _compat.torch_version() < (2, 14):
         # The graph's RNG state is allocated outside its pool: it lands in the lent memory and lives as long as the graph.
-        with pytest.raises(memlend.LeakError):
-            with memlend.lend(cache):
+        with pytest.raises(sublet.LeakError):
+            with sublet.lend(cache):
                 borrower()
     else:
-        with memlend.lend(cache):
+        with sublet.lend(cache):
             borrower()
         graphs[0].replay()
         torch.cuda.synchronize()
@@ -149,11 +149,11 @@ def test_cuda_graph_captured_inside_loan_and_kept():
 def test_several_tensors_and_loans_in_a_row():
     (c1, before1), (c2, before2) = make_cache(8), make_cache(8)
     for cache in (c1, c2, c1, c2):
-        with memlend.lend(cache, keep=cache[:6]) as loan:
+        with sublet.lend(cache, keep=cache[:6]) as loan:
             assert from_cache(cache, torch.empty(100 * MiB, dtype=torch.uint8, device=dev).fill_(1))
         assert loan.copied_bytes == 0
     assert torch.equal(c1[:6], before1[:6]) and torch.equal(c2[:6], before2[:6])
     with pytest.raises(RuntimeError, match="already active"):
-        with memlend.lend(c1):
-            with memlend.lend(c2):
+        with sublet.lend(c1):
+            with sublet.lend(c2):
                 pass

@@ -11,7 +11,7 @@ import sys
 import torch
 import torch.distributed as dist
 
-import memlend
+import sublet
 
 MiB = 1024**2
 mode = sys.argv[1]
@@ -31,7 +31,7 @@ def log(msg):
     print(f"[rank {rank}] {msg}", flush=True)
 
 
-cache = memlend.empty(2048 * MiB, dtype=torch.uint8, device=dev)
+cache = sublet.empty(2048 * MiB, dtype=torch.uint8, device=dev)
 cache.view(torch.int64).random_()
 before = cache.clone()
 results = torch.zeros(3, device=dev)
@@ -59,9 +59,9 @@ log(f"start ({mode} communicator)")
 for i in range(3):
     free_before = torch.cuda.mem_get_info(dev)[0]
     try:
-        with memlend.lend(cache) as loan:
+        with sublet.lend(cache) as loan:
             collectives()
-    except memlend.LeakError as e:
+    except sublet.LeakError as e:
         log(f"loan {i}: FAIL LeakError\n{e}")
         sys.exit(1)
     free_after = torch.cuda.mem_get_info(dev)[0]
@@ -106,7 +106,7 @@ def capture_inside():
     return bool((buf == 2 * world).all())
 
 
-with memlend.lend(cache):
+with sublet.lend(cache):
     ok_before_inside = replay_before()
     ok_capture_inside = capture_inside()
 ok_before_after = replay_before()

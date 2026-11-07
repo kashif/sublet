@@ -4,14 +4,14 @@ import sys
 import pytest
 import torch
 
-import memlend
+import sublet
 from conftest import ROW, MiB, autograd_step, dev, from_cache, gpu_filled, make_cache, make_model
 
 
 def test_free_rows_are_lent_before_kept_ones():
     cache, before = make_cache()
     odd = range(1, 16, 2)
-    with memlend.lend(cache, keep=[cache[i] for i in odd]) as loan:
+    with sublet.lend(cache, keep=[cache[i] for i in odd]) as loan:
         x = torch.empty(8 * ROW, dtype=torch.uint8, device=dev).fill_(1)  # as much as the 8 free rows, scattered
         assert from_cache(cache, x)
         del x
@@ -25,7 +25,7 @@ def test_free_gpu_memory_goes_before_kept_memory():
     with gpu_filled(4 * ROW):
         free = torch.cuda.mem_get_info()[0]
         size = (free + 2 * ROW) // (2 * MiB) * (2 * MiB)  # more than the GPU has left
-        with memlend.lend(cache) as loan:
+        with sublet.lend(cache) as loan:
             torch.empty(size, dtype=torch.uint8, device=dev).fill_(1)
         assert torch.cuda.mem_get_info()[0] >= free - 16 * MiB  # the GPU memory was given back
     assert loan.extra_bytes + loan.copied_bytes == size and loan.extra_bytes >= free // 2 and loan.copied_bytes >= 2 * ROW
@@ -33,10 +33,10 @@ def test_free_gpu_memory_goes_before_kept_memory():
 
 
 def test_strided_views_keep_only_their_pages():
-    cache = memlend.empty(4, 8, 2 * MiB, dtype=torch.uint8)  # 4 layers of 8 blocks of one page
+    cache = sublet.empty(4, 8, 2 * MiB, dtype=torch.uint8)  # 4 layers of 8 blocks of one page
     cache.view(torch.int64).random_()
     before = cache.clone()
-    with memlend.lend(cache, keep=cache[:, 3]) as loan:  # block 3 of every layer
+    with sublet.lend(cache, keep=cache[:, 3]) as loan:  # block 3 of every layer
         torch.empty(28 * 2 * MiB, dtype=torch.uint8, device=dev).fill_(1)  # as much as the other blocks
     others = [b for b in range(8) if b != 3]
     assert loan.copied_bytes == 0 and loan.extra_bytes == 0 and bool((cache[:, others] == 1).all())
@@ -45,18 +45,18 @@ def test_strided_views_keep_only_their_pages():
 
 def test_lend_and_keep_need_views_of_a_lendable_tensor():
     cache, _ = make_cache(2)
-    with pytest.raises(ValueError, match="made by memlend.empty"):
-        memlend.lend(torch.empty(10, device=dev))
+    with pytest.raises(ValueError, match="made by sublet.empty"):
+        sublet.lend(torch.empty(10, device=dev))
     with pytest.raises(ValueError, match="views of the lent tensor"):
-        memlend.lend(cache, keep=[cache[[0, 1]]])  # indexing with a list copies
+        sublet.lend(cache, keep=[cache[[0, 1]]])  # indexing with a list copies
 
 
 def test_later_loans_reuse_the_borrowers_memory():
     cache, before = make_cache()
-    with memlend.lend(cache, keep=[]):
+    with sublet.lend(cache, keep=[]):
         torch.empty(4 * ROW, dtype=torch.uint8, device=dev).fill_(1)
     cache.copy_(before)  # the owner writes everywhere, including where the borrower's memory stays
-    with memlend.lend(cache) as loan:
+    with sublet.lend(cache) as loan:
         torch.empty(4 * ROW, dtype=torch.uint8, device=dev).fill_(2)
     assert loan.copied_bytes == 4 * ROW and torch.equal(cache, before)
 
@@ -65,7 +65,7 @@ def test_memory_beyond_the_tensor_is_given_back_between_loans():
     cache, _ = make_cache()
     free = torch.cuda.mem_get_info()[0]
     for _ in range(2):  # the second loan takes that memory again
-        with memlend.lend(cache, keep=[]) as loan:
+        with sublet.lend(cache, keep=[]) as loan:
             # The fourth takes the last 124 MiB of the tensor and 176 MiB of free GPU memory.
             tensors = [torch.full((300 * MiB,), i + 1, dtype=torch.uint8, device=dev) for i in range(4)]
             assert all(from_cache(cache, t) for t in tensors)
@@ -77,11 +77,11 @@ def test_memory_beyond_the_tensor_is_given_back_between_loans():
 
 def test_memory_beyond_the_tensor_taken_meanwhile():
     cache, _ = make_cache()
-    with memlend.lend(cache, keep=[]):
+    with sublet.lend(cache, keep=[]):
         tensors = [torch.empty(300 * MiB, dtype=torch.uint8, device=dev) for _ in range(4)]  # 176 MiB beyond the tensor
         del tensors
     with gpu_filled(128 * MiB):  # someone else takes that memory between loans
-        with memlend.lend(cache, keep=[]) as loan:  # the borrower's memory starts over, inside the tensor
+        with sublet.lend(cache, keep=[]) as loan:  # the borrower's memory starts over, inside the tensor
             torch.empty(600 * MiB, dtype=torch.uint8, device=dev).fill_(1)
     assert loan.extra_bytes == 0
 
@@ -89,7 +89,7 @@ def test_memory_beyond_the_tensor_taken_meanwhile():
 def test_kept_memory_comes_back_after_an_exception():
     cache, before = make_cache()
     with gpu_filled(2 * ROW), pytest.raises(torch.OutOfMemoryError):  # so that the borrower takes kept memory
-        with memlend.lend(cache):
+        with sublet.lend(cache):
             x = torch.empty(4 * ROW, dtype=torch.uint8, device=dev).fill_(1)
             torch.empty(1024**5, dtype=torch.uint8, device=dev)
     del x
@@ -104,7 +104,7 @@ def test_borrower_using_autograd_matches_reference():
     losses = [autograd_step(model, update, tokens)]  # outside a loan: creates the AdamW state
     cache, before = make_cache()
     for _ in range(2):
-        with memlend.lend(cache):
+        with sublet.lend(cache):
             losses.append(autograd_step(model, update, tokens, cache))
     assert losses == ref_losses
     assert all(torch.equal(p, q) for p, q in zip(model.parameters(), ref_model.parameters()))
@@ -115,7 +115,7 @@ def test_side_streams_and_cublas_workspaces():
     cache, before = make_cache()
     a = torch.randn(1024, 1024, device=dev)
     out = torch.empty(2, 1024, 1024, device=dev)
-    with memlend.lend(cache):  # no LeakError: cuBLAS workspaces made for the new streams are released
+    with sublet.lend(cache):  # no LeakError: cuBLAS workspaces made for the new streams are released
         for i in range(2):
             s = torch.cuda.Stream()
             s.wait_stream(torch.cuda.current_stream())
@@ -131,20 +131,20 @@ def test_side_streams_and_cublas_workspaces():
 def test_leak_is_detected_and_memory_recovers():
     cache, before = make_cache(4)
     kept = []
-    with pytest.raises(memlend.LeakError, match=r"1 allocation\(s\) made during the loan are still alive"):
-        with memlend.lend(cache):
+    with pytest.raises(sublet.LeakError, match=r"1 allocation\(s\) made during the loan are still alive"):
+        with sublet.lend(cache):
             kept.append(torch.empty(10 * MiB, dtype=torch.uint8, device=dev))
     assert torch.equal(cache, before)  # restored all the same
     kept.clear()
-    with memlend.lend(cache):  # freed now: no LeakError
+    with sublet.lend(cache):  # freed now: no LeakError
         torch.empty(10 * MiB, dtype=torch.uint8, device=dev)
 
 
 def test_tensor_dropped_before_its_leaked_allocation():
     cache, _ = make_cache(4)
     kept = []
-    with pytest.raises(memlend.LeakError):
-        with memlend.lend(cache):
+    with pytest.raises(sublet.LeakError):
+        with sublet.lend(cache):
             kept.append(torch.empty(10 * MiB, dtype=torch.uint8, device=dev).fill_(1))
     del cache
     assert bool((kept[0] == 1).all())  # still valid
@@ -159,7 +159,7 @@ def test_cuda_graph_captured_on_the_owners_tensor_stays_valid():
     with torch.cuda.graph(graph):
         out.copy_(head)
         head.add_(1)
-    with memlend.lend(cache, keep=[cache[0]]):
+    with sublet.lend(cache, keep=[cache[0]]):
         torch.empty(15 * ROW, dtype=torch.uint8, device=dev).fill_(0)
     graph.replay()
     torch.cuda.synchronize()
@@ -172,7 +172,7 @@ def test_owner_kernels_still_running_finish_before_the_loan_starts():
         with torch.cuda.stream(torch.cuda.Stream()):
             torch.cuda._sleep(int(5e8))
             cache[15].fill_(42)  # the owner's last write, still queued when it lends
-        with memlend.lend(cache) as loan:
+        with sublet.lend(cache) as loan:
             torch.empty(ROW, dtype=torch.uint8, device=dev).fill_(1)
     assert loan.copied_bytes > 0 and bool((cache[15] == 42).all())
 
@@ -180,9 +180,9 @@ def test_owner_kernels_still_running_finish_before_the_loan_starts():
 def test_tensor_dropped_during_another_loan():
     a, _ = make_cache(4)
     b, before = make_cache(4)
-    with memlend.lend(a):
+    with sublet.lend(a):
         torch.empty(ROW, dtype=torch.uint8, device=dev)
-    with memlend.lend(b):
+    with sublet.lend(b):
         x = torch.empty(ROW, dtype=torch.uint8, device=dev).fill_(1)
         del a  # its pool holds a segment
         del x
@@ -191,7 +191,7 @@ def test_tensor_dropped_during_another_loan():
 
 def test_memory_lives_as_long_as_its_tensor_views():
     free_before = torch.cuda.mem_get_info()[0]
-    cache = memlend.empty(1024 * MiB, dtype=torch.uint8)
+    cache = sublet.empty(1024 * MiB, dtype=torch.uint8)
     view = cache[:10]
     del cache
     assert torch.cuda.mem_get_info()[0] <= free_before - 1024 * MiB
@@ -202,13 +202,13 @@ def test_memory_lives_as_long_as_its_tensor_views():
 @pytest.mark.parametrize(
     "script",
     [
-        "try:\n    with memlend.lend(c):\n        kept.append(torch.empty(10 * 1024**2, device='cuda'))\nexcept memlend.LeakError:\n    pass",
-        "try:\n    with memlend.lend(c):\n        kept.append(torch.empty(10 * 1024**2, device='cuda'))\nexcept memlend.LeakError:\n    pass\ndel c",
+        "try:\n    with sublet.lend(c):\n        kept.append(torch.empty(10 * 1024**2, device='cuda'))\nexcept sublet.LeakError:\n    pass",
+        "try:\n    with sublet.lend(c):\n        kept.append(torch.empty(10 * 1024**2, device='cuda'))\nexcept sublet.LeakError:\n    pass\ndel c",
     ],
     ids=["leaked tensor alive at exit", "tensor dropped before its leaked allocation"],
 )
 def test_interpreter_shutdown(script):
     # Pool and pluggable-allocator destruction order has crashed at exit in some torch versions (pytorch#146431).
-    code = "import torch\nimport memlend\nc = memlend.empty(256 * 1024**2, dtype=torch.uint8)\nkept = []\n" + script + "\nprint('done')\n"
+    code = "import torch\nimport sublet\nc = sublet.empty(256 * 1024**2, dtype=torch.uint8)\nkept = []\n" + script + "\nprint('done')\n"
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
     assert result.returncode == 0 and "done" in result.stdout, result.stderr[-3000:]

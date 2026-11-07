@@ -1,7 +1,7 @@
-"""The private PyTorch allocator internals memlend relies on, behind a version check.
+"""The private PyTorch allocator internals sublet relies on, behind a version check.
 
-They change between releases, so memlend refuses torch versions its test suite has not passed on.
-`MEMLEND_SKIP_TORCH_CHECK=1` bypasses the check.
+They change between releases, so sublet refuses torch versions its test suite has not passed on.
+`SUBLET_SKIP_TORCH_CHECK=1` bypasses the check.
 """
 
 import os
@@ -17,20 +17,20 @@ def torch_version():
 
 
 def check_supported(device):
-    if not os.environ.get("MEMLEND_SKIP_TORCH_CHECK") and not TESTED[0] <= torch_version() <= TESTED[1]:
+    if not os.environ.get("SUBLET_SKIP_TORCH_CHECK") and not TESTED[0] <= torch_version() <= TESTED[1]:
         raise RuntimeError(
-            f"memlend is tested with torch {'.'.join(map(str, TESTED[0]))} to {'.'.join(map(str, TESTED[1]))}, found "
-            f"{torch.__version__}. Set MEMLEND_SKIP_TORCH_CHECK=1 to try anyway, after running its test suite."
+            f"sublet is tested with torch {'.'.join(map(str, TESTED[0]))} to {'.'.join(map(str, TESTED[1]))}, found "
+            f"{torch.__version__}. Set SUBLET_SKIP_TORCH_CHECK=1 to try anyway, after running its test suite."
         )
     backend = torch.cuda.get_allocator_backend()
     if backend != "native":
-        raise RuntimeError(f"memlend needs PyTorch's native CUDA caching allocator, found backend {backend!r}")
+        raise RuntimeError(f"sublet needs PyTorch's native CUDA caching allocator, found backend {backend!r}")
     with torch.cuda.device(device):
         torch.empty(0, device=device)  # creates the device's primary context
 
 
 def pluggable_allocator(path):
-    return torch.cuda.memory.CUDAPluggableAllocator(path, "memlend_malloc", "memlend_free").allocator()
+    return torch.cuda.memory.CUDAPluggableAllocator(path, "sublet_malloc", "sublet_free").allocator()
 
 
 def new_pool(allocator, device):

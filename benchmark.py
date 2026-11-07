@@ -4,9 +4,9 @@ The tensor takes all free GPU memory but 8 GiB, in rows of 1 GiB; a share of the
 job fills one tensor of a given share of that size (--job) with random numbers and sums it. Time per cycle:
 
 - copy-all: copy the whole tensor to pinned CPU memory, free it, run the job, allocate it again and copy it back.
-- memlend: lend the tensor keeping the data rows.
+- sublet: lend the tensor keeping the data rows.
 
-The first cycle of each is timed apart (it pins CPU memory, and memlend maps the job's memory); later ones are the
+The first cycle of each is timed apart (it pins CPU memory, and sublet maps the job's memory); later ones are the
 median of --reps.
 
     python benchmark.py --data 0.3 --job 0.25 0.75 1.0 --out results.jsonl
@@ -21,7 +21,7 @@ import time
 
 import torch
 
-import memlend
+import sublet
 
 GiB = 1024**3
 dev = torch.device("cuda")
@@ -41,7 +41,7 @@ def job(nbytes):
 
 
 def lend_and_run(cache, keep, size):
-    with memlend.lend(cache, keep=keep) as loan:
+    with sublet.lend(cache, keep=keep) as loan:
         job(size)
     return loan
 
@@ -80,7 +80,7 @@ def main():
         torch.cuda.empty_cache()
         torch._C._host_emptyCache()  # so that the next first cycle pins its CPU memory again
 
-        cache = memlend.empty(rows, GiB, dtype=torch.uint8)
+        cache = sublet.empty(rows, GiB, dtype=torch.uint8)
         cache.view(torch.int64).random_()
         sums = [cache[i].view(torch.int64).sum() for i in data]
         keep = [cache[i] for i in data]
@@ -94,9 +94,9 @@ def main():
             "job_gib": size / GiB,
             "copy_all_first_s": copies[0],
             "copy_all_s": statistics.median(copies[1:]),
-            "memlend_first_s": loans[0][0],
-            "memlend_s": statistics.median(t for t, _ in loans[1:]),
-            "memlend_copied_gib": 2 * loans[-1][1].copied_bytes / GiB,
+            "sublet_first_s": loans[0][0],
+            "sublet_s": statistics.median(t for t, _ in loans[1:]),
+            "sublet_copied_gib": 2 * loans[-1][1].copied_bytes / GiB,
         }
         print(json.dumps(row), flush=True)
         with open(args.out, "a") as f:

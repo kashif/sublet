@@ -1,7 +1,7 @@
 // Segment allocator behind the memory pool of a lendable tensor (see lend.py).
 //
 // The tensor's memory (the region) is one address range backed by one physical 2 MiB page per page of the range. The
-// caching allocator asks for whole segments (multiples of 2 MiB); memlend_malloc gives each one a fresh address range
+// caching allocator asks for whole segments (multiples of 2 MiB); sublet_malloc gives each one a fresh address range
 // backed by the cheapest memory first: region pages that cost no copy (not kept, or already lent in this loan), then
 // free device memory, then kept region pages, which are copied to pinned CPU memory first and back when the loan ends.
 // Segments stay mapped from one loan to the next, so later loans reuse them for free. The free device memory they hold
@@ -65,7 +65,7 @@ typedef struct {
 DRIVER_FUNCTIONS(DECLARE)
 
 // Returns 0 on success, -1 if libcuda.so.1 or one of its symbols is missing.
-int memlend_init(void) {
+int sublet_init(void) {
   void* h = dlopen("libcuda.so.1", RTLD_NOW);
   if (!h) return -1;
 #define LOAD(name, symbol, ...) \
@@ -142,7 +142,7 @@ static void destroy(Region* r) {
   free(r->pages), free(r->used), free(r->keep), free(r->touched), free(r->want), free(r->chunks), free(r);
 }
 
-Region* memlend_create(int device, size_t nbytes) {
+Region* sublet_create(int device, size_t nbytes) {
   CUcontext ctx;
   if (cuDevicePrimaryCtxRetain(&ctx, device) != 0) return NULL;
   Region* r = calloc(1, sizeof(Region));
@@ -172,7 +172,7 @@ Region* memlend_create(int device, size_t nbytes) {
 }
 
 // The owner dropped the region. If leaked segments are still alive, free it when the last one goes.
-void memlend_destroy(Region* r) {
+void sublet_destroy(Region* r) {
   pthread_mutex_lock(&mu);
   if (r->nsegments)
     r->dropped = 1;
@@ -181,8 +181,8 @@ void memlend_destroy(Region* r) {
   pthread_mutex_unlock(&mu);
 }
 
-CUdeviceptr memlend_base(Region* r) { return r->base; }
-int64_t memlend_extra_peak(Region* r) { return r->extra_peak; }
+CUdeviceptr sublet_base(Region* r) { return r->base; }
+int64_t sublet_extra_peak(Region* r) { return r->extra_peak; }
 
 // Copies the pages in r->want to (to_host) or from their pinned CPU copy on stream, then clears r->want. Returns the
 // number of pages, or -1 if pinned memory for one of them cannot be allocated.
@@ -266,7 +266,7 @@ static int back(Region* r, Segment* s, int64_t n) {
 // Start a loan of r; keep has one byte per page. The pages segments already hold count as lent from the start: the kept
 // ones are copied out now, and the device memory segments gave back is taken again. Returns -1 if that memory and the
 // region both run out, or pinned CPU memory does.
-int memlend_begin(Region* r, const uint8_t* keep) {
+int sublet_begin(Region* r, const uint8_t* keep) {
   pthread_mutex_lock(&mu);
   CUcontext previous = enter(r);
   memcpy(r->keep, keep, r->npages);
@@ -285,7 +285,7 @@ int memlend_begin(Region* r, const uint8_t* keep) {
 
 // End the loan of r: copies the kept pages it lent back on stream and waits for them, then, with give_back, gives back
 // the device memory its segments hold beyond the region. Returns the bytes copied back.
-int64_t memlend_end(Region* r, void* stream, int give_back) {
+int64_t sublet_end(Region* r, void* stream, int give_back) {
   pthread_mutex_lock(&mu);
   CUcontext previous = enter(r);
   lender[r->device] = NULL;
@@ -304,7 +304,7 @@ int64_t memlend_end(Region* r, void* stream, int give_back) {
   return copied * PAGE;
 }
 
-void* memlend_malloc(ssize_t size, int device, void* stream) {
+void* sublet_malloc(ssize_t size, int device, void* stream) {
   (void)stream;
   pthread_mutex_lock(&mu);
   Region* r = lender[device];
@@ -328,7 +328,7 @@ void* memlend_malloc(ssize_t size, int device, void* stream) {
   return s ? (void*)s->ptr : NULL;
 }
 
-void memlend_free(void* ptr, size_t size, int device, void* stream) {
+void sublet_free(void* ptr, size_t size, int device, void* stream) {
   (void)size, (void)device, (void)stream;
   pthread_mutex_lock(&mu);
   Segment** link = &segments;

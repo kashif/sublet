@@ -19,19 +19,19 @@ _dropped = []  # (device index, pool) of regions dropped during a loan on their 
 def _load():
     global _lib, _allocator
     if _lib is None:
-        spec = importlib.util.find_spec("memlend._allocator")
+        spec = importlib.util.find_spec("sublet._allocator")
         if spec is None:
-            raise ImportError("memlend's allocator library is missing: install memlend with pip so that it gets compiled")
+            raise ImportError("sublet's allocator library is missing: install sublet with pip so that it gets compiled")
         lib = ctypes.CDLL(spec.origin)
-        if lib.memlend_init() != 0:
-            raise RuntimeError("memlend could not load the CUDA driver (libcuda.so.1)")
+        if lib.sublet_init() != 0:
+            raise RuntimeError("sublet could not load the CUDA driver (libcuda.so.1)")
         p = ctypes.c_void_p
-        lib.memlend_create.argtypes, lib.memlend_create.restype = [ctypes.c_int, ctypes.c_size_t], p
-        lib.memlend_destroy.argtypes = [p]
-        lib.memlend_base.argtypes, lib.memlend_base.restype = [p], ctypes.c_uint64
-        lib.memlend_begin.argtypes, lib.memlend_begin.restype = [p, p], ctypes.c_int
-        lib.memlend_end.argtypes, lib.memlend_end.restype = [p, p, ctypes.c_int], ctypes.c_int64
-        lib.memlend_extra_peak.argtypes, lib.memlend_extra_peak.restype = [p], ctypes.c_int64
+        lib.sublet_create.argtypes, lib.sublet_create.restype = [ctypes.c_int, ctypes.c_size_t], p
+        lib.sublet_destroy.argtypes = [p]
+        lib.sublet_base.argtypes, lib.sublet_base.restype = [p], ctypes.c_uint64
+        lib.sublet_begin.argtypes, lib.sublet_begin.restype = [p, p], ctypes.c_int
+        lib.sublet_end.argtypes, lib.sublet_end.restype = [p, p, ctypes.c_int], ctypes.c_int64
+        lib.sublet_extra_peak.argtypes, lib.sublet_extra_peak.restype = [p], ctypes.c_int64
         _allocator = _compat.pluggable_allocator(spec.origin)
         _lib = lib
     return _lib
@@ -40,17 +40,17 @@ def _load():
 class _Region:
     """The memory behind a tensor made by `empty`, exposed through `__cuda_array_interface__`.
 
-    memlend maps it page by page itself, so that it can map the same pages into the borrower's segments. It lives as long
+    sublet maps it page by page itself, so that it can map the same pages into the borrower's segments. It lives as long
     as a tensor view of it. The borrower's segments live in `pool` from one loan to the next.
     """
 
     def __init__(self, nbytes, device):
         lib = _load()
-        self._destroy = lib.memlend_destroy  # module globals may be gone at interpreter exit
-        self.handle = lib.memlend_create(device.index, nbytes)
+        self._destroy = lib.sublet_destroy  # module globals may be gone at interpreter exit
+        self.handle = lib.sublet_create(device.index, nbytes)
         if not self.handle:
-            raise torch.OutOfMemoryError(f"memlend could not allocate {nbytes} bytes on {device}")
-        self.device, self.npages, self.base = device, nbytes // PAGE, lib.memlend_base(self.handle)
+            raise torch.OutOfMemoryError(f"sublet could not allocate {nbytes} bytes on {device}")
+        self.device, self.npages, self.base = device, nbytes // PAGE, lib.sublet_base(self.handle)
         self.__cuda_array_interface__ = {"shape": (nbytes,), "typestr": "|u1", "data": (self.base, False), "version": 3}
         self.pool = _compat.new_pool(_allocator, device)
 
@@ -116,7 +116,7 @@ class Loan:
     def __init__(self, tensor, keep):
         self.region = _regions.get(tensor.untyped_storage().data_ptr()) if tensor.is_cuda else None
         if self.region is None:
-            raise ValueError("lend needs a tensor made by memlend.empty, or a view of one")
+            raise ValueError("lend needs a tensor made by sublet.empty, or a view of one")
         self.keep = _kept_pages(self.region, keep)
         self.copied_bytes = self.extra_bytes = None
 
@@ -126,11 +126,11 @@ class Loan:
             raise RuntimeError(f"a loan is already active on {device}; loans on one device cannot be nested")
         torch.cuda.synchronize(device)  # the owner's last kernels may still use the memory
         keep = self.keep.to(torch.uint8)  # alive during the call
-        if _lib.memlend_begin(region.handle, keep.data_ptr()) != 0:
+        if _lib.sublet_begin(region.handle, keep.data_ptr()) != 0:
             # The memory the borrower had beyond the tensor is gone, or pinned CPU memory ran out: start from no segments.
             region.pool = _compat.new_pool(_allocator, device)
-            if _lib.memlend_begin(region.handle, keep.data_ptr()) != 0:
-                raise torch.OutOfMemoryError("memlend could not allocate pinned CPU memory to copy the kept data")
+            if _lib.sublet_begin(region.handle, keep.data_ptr()) != 0:
+                raise torch.OutOfMemoryError("sublet could not allocate pinned CPU memory to copy the kept data")
         _compat.route_everything_to(region.pool, device)
         _active[device.index] = self
         return self
@@ -147,8 +147,8 @@ class Loan:
         del _active[device.index]
         _dropped[:] = [item for item in _dropped if item[0] != device.index]
         # Restores the kept data and, unless allocations leaked into it, gives back the memory taken beyond the tensor.
-        self.copied_bytes = _lib.memlend_end(region.handle, torch.cuda.current_stream(device).cuda_stream, not live)
-        self.extra_bytes = _lib.memlend_extra_peak(region.handle)
+        self.copied_bytes = _lib.sublet_end(region.handle, torch.cuda.current_stream(device).cuda_stream, not live)
+        self.extra_bytes = _lib.sublet_extra_peak(region.handle)
         self.region = None  # a finished loan does not keep the tensor alive
         if live and exc_type is None:
             raise LeakError(_leak_message(live))
