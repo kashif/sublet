@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Lend a GPU memory region to arbitrary PyTorch code and learn exactly which blocks it used."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["torch"]
+dependencies = ["numpy", "torch"]  # torch reads __cuda_array_interface__ through numpy
 # License: not chosen yet, this is the author's call (see README).
 
 [project.optional-dependencies]
