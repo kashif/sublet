@@ -184,6 +184,13 @@ void sublet_destroy(Region* r) {
 CUdeviceptr sublet_base(Region* r) { return r->base; }
 int64_t sublet_extra_peak(Region* r) { return r->extra_peak; }
 
+// For inspection: one byte per page, set if the page was lent during the current loan (or the last one, after it).
+void sublet_touched(Region* r, uint8_t* out) {
+  pthread_mutex_lock(&mu);
+  memcpy(out, r->touched, r->npages);
+  pthread_mutex_unlock(&mu);
+}
+
 // Copies the pages in r->want to (to_host) or from their pinned CPU copy on stream, then clears r->want. Returns the
 // number of pages, or -1 if pinned memory for one of them cannot be allocated.
 static int64_t copy_wanted(Region* r, int to_host, CUstream stream) {
