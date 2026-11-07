@@ -5,6 +5,12 @@ While the tensor's owner is paused, any PyTorch code (autograd, several streams,
 the tensor's memory. When the loan ends, the parts you keep are back, bit-identical: only the kept memory the borrower
 actually used is copied to the CPU and back.
 
+![GPU memory over time: without memlend the job runs out of memory; with memlend it borrows the tensor's memory](assets/lending.svg)
+
+Each column is the GPU memory at one moment. Without memlend, the job fills the free memory above the owner's tensor
+and runs out. With memlend, it takes the free memory, then the tensor's pages, whose data is copied to the CPU just
+before and back when the loan ends.
+
 ## Install
 
 ```bash
