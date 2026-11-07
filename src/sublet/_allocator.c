@@ -4,6 +4,7 @@
 // caching allocator asks for whole segments (multiples of 2 MiB); sublet_malloc gives each one a fresh address range
 // backed by the cheapest memory first: region pages that cost no copy (not kept, or already lent in this loan), then
 // free device memory, then kept region pages, which are copied to pinned CPU memory first and back when the loan ends.
+// One-page segments, PyTorch's small allocations, take free device memory first.
 // Segments stay mapped from one loan to the next, so later loans reuse them for free. The free device memory they hold
 // is given back when a loan ends and taken again when the next one starts; if it is gone by then, region pages fill in.
 //
@@ -184,6 +185,17 @@ void sublet_destroy(Region* r) {
 CUdeviceptr sublet_base(Region* r) { return r->base; }
 int64_t sublet_extra_peak(Region* r) { return r->extra_peak; }
 
+// 1 if allocations in the segment at ptr, made for r, must be freed before the loan ends: it holds pages of r, or
+// device memory that the end of the loan gives back. Only one-page segments of device memory may outlive a loan.
+int sublet_must_free(Region* r, CUdeviceptr ptr) {
+  pthread_mutex_lock(&mu);
+  Segment* s = segments;
+  while (s && s->ptr != ptr) s = s->next;
+  int must_free = s && s->r == r && (s->nextra < s->npages || s->npages > 1);
+  pthread_mutex_unlock(&mu);
+  return must_free;
+}
+
 // For inspection: one byte per page, set if the page was lent during the current loan (or the last one, after it).
 void sublet_touched(Region* r, uint8_t* out) {
   pthread_mutex_lock(&mu);
@@ -243,9 +255,14 @@ static int64_t new_memory(Region* r, Segment* s, int64_t n) {
 // pages), then kept region pages, copied to the CPU first. Returns -1 if the GPU and the region run out.
 static int back(Region* r, Segment* s, int64_t n) {
   int64_t* picked = malloc(n * sizeof(int64_t));
-  int64_t cheap = pick_pages(r, n, picked, 0);
-  for (int64_t i = 0; i < cheap; i++) r->used[picked[i]] = 1;  // so that the second pick skips them
-  int64_t nextra = new_memory(r, s, n - cheap);
+  // A one-page segment holds PyTorch's small allocations (under 1 MiB), which often outlive the loan, such as a loss
+  // kept for logging: free device memory goes first there, so that they stay out of the region.
+  int64_t nextra = s->npages == 1 ? new_memory(r, s, n) : 0, cheap = 0;
+  if (nextra < n) {
+    cheap = pick_pages(r, n - nextra, picked, 0);
+    for (int64_t i = 0; i < cheap; i++) r->used[picked[i]] = 1;  // so that the second pick skips them
+    if (s->npages > 1) nextra = new_memory(r, s, n - cheap);
+  }
   int64_t kept = pick_pages(r, n - cheap - nextra, picked + cheap, 1);
   for (int64_t i = 0; i < cheap + kept; i++) r->want[picked[i]] = r->keep[picked[i]] && !r->touched[picked[i]];
   if (cheap + nextra + kept < n || copy_wanted(r, 1, r->copy_stream) < 0) {
@@ -300,7 +317,7 @@ int64_t sublet_end(Region* r, void* stream, int give_back) {
   int64_t copied = copy_wanted(r, 0, (CUstream)stream);
   cuStreamSynchronize((CUstream)stream);
   for (Segment* s = segments; s && give_back; s = s->next)
-    if (s->r == r && s->extra) {
+    if (s->r == r && s->extra && s->npages > 1) {  // one-page segments may still hold allocations
       cuMemUnmap(s->ptr, s->nextra * PAGE);
       cuMemRelease(s->extra);
       s->extra = 0;

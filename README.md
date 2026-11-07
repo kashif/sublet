@@ -43,7 +43,8 @@ print(f"copied {loan.copied_bytes} bytes, data intact: {torch.equal(cache[1::2],
 nothing back. Each allocation of the borrower gets its own addresses, backed by the cheapest memory first: pages of the
 tensor that are not kept (wherever they are), then free GPU memory, then kept pages, copied to the CPU just before. The
 borrower's memory stays mapped from one loan to the next, so mapping is paid once; the free GPU memory it took is given
-back between loans. Anything the borrower leaves alive raises `LeakError` when the loan ends.
+back between loans. Anything the borrower leaves alive raises `LeakError` when the loan ends, except small allocations
+(under 1 MiB): they take free GPU memory first, so that tiny tensors like a loss kept for logging can outlive the loan.
 
 ## Benchmark
 
@@ -70,8 +71,8 @@ torch versions and `backend:cudaMallocAsync` are refused; `SUBLET_SKIP_TORCH_CHE
   it copies (about 0.6 s per GiB on the H100 nodes here).
 - Kept data the owner writes where the borrower's memory stays is copied out and back at every loan.
 - The owner must not use the tensor during a loan, and one loan per device runs at a time.
-- Memory the borrower keeps after the loan (state created during it, variables still referenced, CUDA graphs captured in
-  it on torch before 2.14) raises `LeakError`: create long-lived state before lending.
+- Memory the borrower keeps after the loan (state created during it, variables still referenced) raises `LeakError`,
+  except small allocations: create long-lived state before lending.
 - Linux and CUDA only.
 
 ## License

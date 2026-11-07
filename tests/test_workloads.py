@@ -8,7 +8,6 @@ import torch.nn as nn
 
 import sublet
 from conftest import MiB, dev, from_cache, make_cache
-from sublet import _compat
 
 
 @pytest.mark.skipif(torch.cuda.get_allocator_backend() == "native", reason="only under backend:cudaMallocAsync")
@@ -133,17 +132,13 @@ def test_cuda_graph_captured_inside_loan_and_kept():
                 x.mul_(2)
         graphs.append(graph)
 
-    if _compat.torch_version() < (2, 14):
-        # The graph's RNG state is allocated outside its pool: it lands in the lent memory and lives as long as the graph.
-        with pytest.raises(sublet.LeakError):
-            with sublet.lend(cache):
-                borrower()
-    else:
-        with sublet.lend(cache):
-            borrower()
-        graphs[0].replay()
-        torch.cuda.synchronize()
-        assert torch.equal(x, torch.full_like(x, 2.0)) and torch.equal(cache, before)
+    # Before torch 2.14 the graph's RNG state is allocated outside its pool and lives as long as the graph: small, it
+    # takes free GPU memory, outside the tensor
+    with sublet.lend(cache):
+        borrower()
+    graphs[0].replay()
+    torch.cuda.synchronize()
+    assert torch.equal(x, torch.full_like(x, 2.0)) and torch.equal(cache, before)
 
 
 def test_several_tensors_and_loans_in_a_row():

@@ -140,6 +140,15 @@ def test_leak_is_detected_and_memory_recovers():
         torch.empty(10 * MiB, dtype=torch.uint8, device=dev)
 
 
+def test_small_tensors_can_outlive_the_loan():
+    cache, _ = make_cache(4)
+    with sublet.lend(cache, keep=[]):
+        loss = torch.full((1,), 3.0, device=dev)  # a small allocation: free GPU memory, outside the tensor
+    with sublet.lend(cache, keep=[]):  # the next loan writes over the whole tensor
+        torch.empty(cache.numel(), dtype=torch.uint8, device=dev).fill_(1)
+    assert loss.item() == 3.0
+
+
 def test_tensor_dropped_before_its_leaked_allocation():
     cache, _ = make_cache(4)
     kept = []

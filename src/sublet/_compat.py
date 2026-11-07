@@ -57,6 +57,6 @@ def segments(pool):
     return pool.snapshot(include_traces=False) if torch_version() >= (2, 11) else pool.snapshot()
 
 
-def live_blocks(pool):
-    """Blocks of `pool` still allocated."""
-    return [b for s in segments(pool) for b in s["blocks"] if b["state"] == "active_allocated"]
+def live_blocks(pool, in_segment):
+    """Blocks of `pool` still allocated, in the segments whose address satisfies `in_segment`."""
+    return [b for s in segments(pool) if in_segment(s["address"]) for b in s["blocks"] if b["state"] == "active_allocated"]

@@ -32,6 +32,7 @@ def _load():
         lib.sublet_begin.argtypes, lib.sublet_begin.restype = [p, p], ctypes.c_int
         lib.sublet_end.argtypes, lib.sublet_end.restype = [p, p, ctypes.c_int], ctypes.c_int64
         lib.sublet_extra_peak.argtypes, lib.sublet_extra_peak.restype = [p], ctypes.c_int64
+        lib.sublet_must_free.argtypes, lib.sublet_must_free.restype = [p, ctypes.c_uint64], ctypes.c_int
         _allocator = _compat.pluggable_allocator(spec.origin)
         _lib = lib
     return _lib
@@ -53,6 +54,10 @@ class _Region:
         self.device, self.npages, self.base = device, nbytes // PAGE, lib.sublet_base(self.handle)
         self.__cuda_array_interface__ = {"shape": (nbytes,), "typestr": "|u1", "data": (self.base, False), "version": 3}
         self.pool = _compat.new_pool(_allocator, device)
+
+    def must_free(self, address):
+        """Whether the allocations in the segment at `address` must be freed before the loan ends."""
+        return bool(_lib.sublet_must_free(self.handle, address))
 
     def __del__(self):
         if self.handle:
@@ -89,8 +94,9 @@ def lend(tensor: torch.Tensor, keep=None) -> "Loan":
 
     When it exits, what `keep` covers is back, bit-identical, and the rest of the tensor may have changed. The borrower
     gets the tensor's memory that is not kept first, then free GPU memory, then kept memory, which is copied to the CPU
-    and back. The owner must not use the tensor inside, and
-    everything allocated inside must be freed by the end (else `LeakError`).
+    and back. The owner must not use the tensor inside. Allocations made inside must be freed by the end
+    (else `LeakError`), except small ones (under 1 MiB): those take free GPU memory first, so that tiny tensors such as
+    a loss kept for logging can outlive the loan.
 
     Args:
         tensor (`torch.Tensor`):
@@ -140,10 +146,10 @@ class Loan:
         torch.cuda.synchronize(device)  # the borrower's kernels may still use the memory
         _compat.stop_routing(region.pool, device)
         _compat.clear_cublas_workspaces()
-        live = _compat.live_blocks(region.pool)
+        live = _compat.live_blocks(region.pool, region.must_free)
         if live:  # garbage cycles may still hold borrower tensors
             gc.collect()
-            live = _compat.live_blocks(region.pool)
+            live = _compat.live_blocks(region.pool, region.must_free)
         del _active[device.index]
         _dropped[:] = [item for item in _dropped if item[0] != device.index]
         # Restores the kept data and, unless allocations leaked into it, gives back the memory taken beyond the tensor.
