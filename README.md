@@ -26,12 +26,12 @@ A C compiler (gcc or clang) is needed at install time; no CUDA toolkit.
 import torch
 import sublet
 
-cache = sublet.empty(16, 1024**3, dtype=torch.uint8)   # 16 GiB, used like any tensor
+cache = sublet.empty(16, 1024**3, dtype=torch.uint8)  # 16 GiB, used like any tensor
 cache.random_(0, 256)
 before = cache[1::2].clone()
 
-def run_anything():                                    # any PyTorch code
-    x = torch.randn(512 * 1024**2, device="cuda")      # 2 GiB
+def run_anything():                                   # any PyTorch code
+    x = torch.randn(512 * 1024**2, device="cuda")     # 2 GiB
     return (x * x).mean().item()
 
 with sublet.lend(cache, keep=cache[1::2]) as loan:    # odd rows hold data, even rows are free
