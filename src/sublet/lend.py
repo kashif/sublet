@@ -190,8 +190,8 @@ class Loan:
 
 
 def _move_out(region):
-    """Moves the segments still holding pages of the region out of it. Returns the blocks of those that could not be,
-    which no longer hold data."""
+    """Moves the segments still holding pages of the region out of it. Returns the allocations in those that could not
+    be, which no longer hold data."""
     stuck = _stuck_segments(region)
     if stuck:  # garbage cycles may hold some of them, and PyTorch may hold GPU memory it does not use
         gc.collect()
@@ -207,7 +207,7 @@ def _move_out(region):
         if block["state"] == "active_allocated"
     ]
     _lib.sublet_blank_out(region.handle)
-    return blocks or [{"size": 0, "requested_size": 0}]
+    return blocks
 
 
 def _stuck_segments(region):

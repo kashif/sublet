@@ -59,14 +59,17 @@ data back):
 
 ![Seconds per cycle on H100 and B200, first and later: copy all out and back, and sublet](assets/benchmark.svg)
 
-Copy all moves the whole tensor out and back; its first cycle also pins that much CPU memory. sublet's first loan pins
-CPU memory only for the kept data it copies; later loans reuse it.
+Copy all moves the whole tensor out and back; its first cycle also pins that much CPU memory. Until the job needs kept
+rows, sublet copies nothing and a cycle is the job itself; at 100%, it copies the kept rows the job lands on (13 GiB on
+the H100, 43 GiB on the B200), and its first loan pins that much CPU memory. A GiB to the CPU and back takes 0.62 s
+on this H100 node and 0.04 s on the B200.
 
 ## Compatibility
 
-Tested with torch 2.6 to 2.16 on Python 3.10 to 3.13, on two GPUs for NCCL, and with `max_split_size_mb`. sublet
-refuses `expandable_segments` (the caching allocator then maps memory itself) and `backend:cudaMallocAsync`; it refuses
-torch versions outside the tested range unless `SUBLET_SKIP_TORCH_CHECK=1`.
+Tested with torch 2.6 to 2.16 on Python 3.10 to 3.13, on T4, A10G, L4, L40S, A100, H100, H200, B200 and RTX PRO 6000,
+on two GPUs for NCCL (A10G, H200, B200), and with `max_split_size_mb`. sublet refuses `expandable_segments` (the caching
+allocator then maps memory itself, without `cudaMalloc`) and `backend:cudaMallocAsync`, and torch versions outside the
+tested range unless `SUBLET_SKIP_TORCH_CHECK=1`.
 
 ## Limitations
 
