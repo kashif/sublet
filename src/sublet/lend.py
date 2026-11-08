@@ -1,6 +1,7 @@
 import ctypes
 import gc
 import importlib.util
+import warnings
 import weakref
 
 import torch
@@ -10,14 +11,12 @@ from . import _compat
 PAGE = 2 * 1024**2  # the caching allocator requests segments in multiples of 2 MiB
 
 _lib = None
-_allocator = None
 _regions = weakref.WeakValueDictionary()  # address -> _Region
 _active = {}  # device index -> Loan
-_dropped = []  # (device index, pool) of regions dropped during a loan on their device, released after it
 
 
 def _load():
-    global _lib, _allocator
+    global _lib
     if _lib is None:
         spec = importlib.util.find_spec("sublet._allocator")
         if spec is None:
@@ -25,15 +24,22 @@ def _load():
         lib = ctypes.CDLL(spec.origin)
         if lib.sublet_init() != 0:
             raise RuntimeError("sublet could not load the CUDA driver (libcuda.so.1)")
-        p = ctypes.c_void_p
+        p, address = ctypes.c_void_p, ctypes.c_uint64
         lib.sublet_create.argtypes, lib.sublet_create.restype = [ctypes.c_int, ctypes.c_size_t], p
         lib.sublet_destroy.argtypes = [p]
-        lib.sublet_base.argtypes, lib.sublet_base.restype = [p], ctypes.c_uint64
-        lib.sublet_begin.argtypes, lib.sublet_begin.restype = [p, p], ctypes.c_int
-        lib.sublet_end.argtypes, lib.sublet_end.restype = [p, p, ctypes.c_int], ctypes.c_int64
-        lib.sublet_extra_peak.argtypes, lib.sublet_extra_peak.restype = [p], ctypes.c_int64
-        lib.sublet_must_free.argtypes, lib.sublet_must_free.restype = [p, ctypes.c_uint64], ctypes.c_int
-        _allocator = _compat.pluggable_allocator(spec.origin)
+        lib.sublet_base.argtypes, lib.sublet_base.restype = [p], address
+        lib.sublet_lent.argtypes = [p, p]
+        lib.sublet_backs.argtypes, lib.sublet_backs.restype = [p, address], ctypes.c_int
+        lib.sublet_begin.argtypes = [p, p]
+        lib.sublet_stop.argtypes = [p]
+        lib.sublet_move_out.argtypes, lib.sublet_move_out.restype = [p, p, ctypes.c_int64], ctypes.c_int64
+        lib.sublet_blank_out.argtypes = [p]
+        lib.sublet_end.argtypes = [p, p, p]
+        if lib.sublet_hook() != 0:
+            raise RuntimeError(
+                "sublet could not reach the cudaMalloc and cudaFree calls of PyTorch's caching allocator (in "
+                "libc10_cuda.so, linked to libcudart): this PyTorch build is not supported"
+            )
         _lib = lib
     return _lib
 
@@ -41,11 +47,12 @@ def _load():
 class _Region:
     """The memory behind a tensor made by `empty`, exposed through `__cuda_array_interface__`.
 
-    sublet maps it page by page itself, so that it can map the same pages into the borrower's segments. It lives as long
-    as a tensor view of it. The borrower's segments live in `pool` from one loan to the next.
+    sublet maps its pages itself, so that loans can hand them out. It lives as long as a view of the tensor, and as long
+    as the segments of the borrower's memory made from it.
     """
 
     def __init__(self, nbytes, device):
+        self.handle = None
         lib = _load()
         self._destroy = lib.sublet_destroy  # module globals may be gone at interpreter exit
         self.handle = lib.sublet_create(device.index, nbytes)
@@ -53,18 +60,20 @@ class _Region:
             raise torch.OutOfMemoryError(f"sublet could not allocate {nbytes} bytes on {device}")
         self.device, self.npages, self.base = device, nbytes // PAGE, lib.sublet_base(self.handle)
         self.__cuda_array_interface__ = {"shape": (nbytes,), "typestr": "|u1", "data": (self.base, False), "version": 3}
-        self.pool = _compat.new_pool(_allocator, device)
 
-    def must_free(self, address):
-        """Whether the allocations in the segment at `address` must be freed before the loan ends."""
-        return bool(_lib.sublet_must_free(self.handle, address))
+    def lent_pages(self):
+        """For inspection: whether each 2 MiB page was lent during the current loan (or the last one, after it)."""
+        out = torch.empty(self.npages, dtype=torch.uint8)
+        _lib.sublet_lent(self.handle, out.data_ptr())
+        return out.bool()
+
+    def backs(self, address):
+        """For inspection: whether the memory at `address` is the tensor's, lent to the borrower."""
+        return bool(_lib.sublet_backs(self.handle, address))
 
     def __del__(self):
         if self.handle:
-            if _active and self.device.index in _active:  # torch < 2.13 aborts if it is released during a loan
-                _dropped.append((self.device.index, self.pool))
-            del self.pool  # releases the borrower's segments
-            self._destroy(self.handle)  # the memory goes with the last segment using it
+            self._destroy(self.handle)  # once the last segment made from it is freed
 
 
 def empty(*size, dtype=None, device=None) -> torch.Tensor:
@@ -90,75 +99,122 @@ def empty(*size, dtype=None, device=None) -> torch.Tensor:
 
 
 def lend(tensor: torch.Tensor, keep=None) -> "Loan":
-    """Context manager: inside it, every CUDA allocation on the tensor's device may use the tensor's memory.
+    """Lends the memory of `tensor` to every CUDA allocation on its device, from now until the loan ends.
 
-    When it exits, what `keep` covers is back, bit-identical, and the rest of the tensor may have changed. The borrower
-    gets the tensor's memory that is not kept first, then free GPU memory, then kept memory, which is copied to the CPU
-    and back. The owner must not use the tensor inside. Allocations made inside must be freed by the end
-    (else `LeakError`), except small ones (under 1 MiB): those take free GPU memory first, so that tiny tensors such as
-    a loss kept for logging can outlive the loan.
+    ```python
+    with sublet.lend(cache, keep=cache[3]) as loan:
+        ...  # any PyTorch code
+    ```
+
+    Or `loan = sublet.lend(cache, keep=cache[3])` and, later, `loan.end()`. The borrower's memory comes from the tensor's
+    memory that is not kept, then from free GPU memory, then from kept memory, copied to the CPU first and back when the
+    loan ends. Allocations still alive then are moved out of the tensor's memory. The tensor's owner must not use it
+    during the loan, and one loan per device runs at a time.
 
     Args:
         tensor (`torch.Tensor`):
             A tensor made by `empty`, or a view of one: its whole memory is lent.
         keep (`torch.Tensor` or `list` of `torch.Tensor`, *optional*):
-            Views of `tensor` to get back, such as `tensor[3]` or `tensor[:, 2:5]`. Defaults to all of it; `[]` gets
-            nothing back and copies nothing.
+            Views of `tensor` to get back, bit-identical, such as `tensor[3]` or `tensor[:, 2:5]`. Defaults to all of it;
+            `[]` gets nothing back. The rest of the tensor may have changed.
     """
     return Loan(tensor, keep)
 
 
 class LeakError(RuntimeError):
-    """Allocations made during a loan are still alive when it ends."""
+    """Allocations made during a loan were still alive when it ended, and the GPU had no memory to move them out of
+    the lent tensor."""
 
 
 class Loan:
-    """A loan made by `lend`. After it:
+    """A loan of a tensor's memory, made by `lend`. After it ends:
 
     - `copied_bytes`: kept memory the borrower used, copied to the CPU and back.
-    - `extra_bytes`: peak memory the borrower used beyond the tensor.
+    - `extra_bytes`: the most GPU memory the borrower took beyond the tensor.
+    - `moved_bytes`: memory of allocations still alive at the end, moved out of the tensor.
     """
 
     def __init__(self, tensor, keep):
-        self.region = _regions.get(tensor.untyped_storage().data_ptr()) if tensor.is_cuda else None
-        if self.region is None:
+        region = _regions.get(tensor.untyped_storage().data_ptr()) if tensor.is_cuda else None
+        if region is None:
             raise ValueError("lend needs a tensor made by sublet.empty, or a view of one")
-        self.keep = _kept_pages(self.region, keep)
-        self.copied_bytes = self.extra_bytes = None
-
-    def __enter__(self):
-        region, device = self.region, self.region.device
+        device = region.device
         if device.index in _active:
             raise RuntimeError(f"a loan is already active on {device}; loans on one device cannot be nested")
+        _compat.check_allocator_settings()
+        kept = _kept_pages(region, keep).to(torch.uint8)
         torch.cuda.synchronize(device)  # the owner's last kernels may still use the memory
-        keep = self.keep.to(torch.uint8)  # alive during the call
-        if _lib.sublet_begin(region.handle, keep.data_ptr()) != 0:
-            # The memory the borrower had beyond the tensor is gone, or pinned CPU memory ran out: start from no segments.
-            region.pool = _compat.new_pool(_allocator, device)
-            if _lib.sublet_begin(region.handle, keep.data_ptr()) != 0:
-                raise torch.OutOfMemoryError("sublet could not allocate pinned CPU memory to copy the kept data")
-        _compat.route_everything_to(region.pool, device)
+        _lib.sublet_begin(region.handle, kept.data_ptr())
         _active[device.index] = self
+        self._region = region
+        self.copied_bytes = self.extra_bytes = self.moved_bytes = None
+
+    def end(self):
+        """Ends the loan: what `keep` covers is back, and the borrower's allocations still alive are moved out of the
+        tensor's memory. Does nothing if the loan has ended already.
+
+        Raises `LeakError` if the GPU has no room to move some of them: they keep their addresses but lose their data.
+        """
+        stuck = self._end()
+        if stuck:
+            raise LeakError(_leak_message(stuck))
+
+    def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        region, device = self.region, self.region.device
-        torch.cuda.synchronize(device)  # the borrower's kernels may still use the memory
-        _compat.stop_routing(region.pool, device)
-        _compat.clear_cublas_workspaces()
-        live = _compat.live_blocks(region.pool, region.must_free)
-        if live:  # garbage cycles may still hold borrower tensors
-            gc.collect()
-            live = _compat.live_blocks(region.pool, region.must_free)
-        del _active[device.index]
-        _dropped[:] = [item for item in _dropped if item[0] != device.index]
-        # Restores the kept data and, unless allocations leaked into it, gives back the memory taken beyond the tensor.
-        self.copied_bytes = _lib.sublet_end(region.handle, torch.cuda.current_stream(device).cuda_stream, not live)
-        self.extra_bytes = _lib.sublet_extra_peak(region.handle)
-        self.region = None  # a finished loan does not keep the tensor alive
-        if live and exc_type is None:
-            raise LeakError(_leak_message(live))
+        stuck = self._end()
+        if stuck and exc is None:
+            raise LeakError(_leak_message(stuck))
+        if stuck:  # warn rather than hide the exception that ended the loan
+            warnings.warn(_leak_message(stuck), stacklevel=2)
         return False
+
+    def _end(self):
+        region, self._region = self._region, None
+        if region is None:
+            return []
+        device, stuck = region.device, []
+        try:
+            torch.cuda.synchronize(device)  # the borrower's kernels may still use the memory
+            _lib.sublet_stop(region.handle)
+            _compat.clear_cublas_workspaces()
+            torch.cuda.empty_cache()  # PyTorch gives back the segments it holds nothing in
+            stuck = _move_out(region)
+        finally:
+            out = (ctypes.c_int64 * 4)()
+            _lib.sublet_end(region.handle, torch.cuda.current_stream(device).cuda_stream, out)
+            del _active[device.index]
+        self.copied_bytes, self.extra_bytes, self.moved_bytes, self._gathered_bytes = out
+        return stuck
+
+
+def _move_out(region):
+    """Moves the segments still holding pages of the region out of it. Returns the blocks of those that could not be,
+    which no longer hold data."""
+    stuck = _stuck_segments(region)
+    if stuck:  # garbage cycles may hold some of them, and PyTorch may hold GPU memory it does not use
+        gc.collect()
+        torch.cuda.empty_cache()
+        stuck = _stuck_segments(region)
+    if not stuck:
+        return []
+    blocks = [
+        block
+        for segment in torch.cuda.memory_snapshot()
+        if segment["address"] in stuck
+        for block in segment["blocks"]
+        if block["state"] == "active_allocated"
+    ]
+    _lib.sublet_blank_out(region.handle)
+    return blocks or [{"size": 0, "requested_size": 0}]
+
+
+def _stuck_segments(region):
+    """Moves what it can; returns the addresses of the segments it could not move."""
+    addresses = (ctypes.c_uint64 * 1024)()
+    n = _lib.sublet_move_out(region.handle, addresses, len(addresses))
+    return set(addresses[: min(n, len(addresses))]) if n else set()
 
 
 def _kept_pages(region, keep):
@@ -190,15 +246,15 @@ def _byte_runs(view):
     return starts * view.element_size(), run * view.element_size()
 
 
-def _leak_message(live):
+def _leak_message(stuck):
     lines = [
-        f"{len(live)} allocation(s) made during the loan are still alive ({sum(b['size'] for b in live)} bytes). Free "
-        "them before the loan ends (`del` them, or run the borrower in a function), and create long-lived state before "
-        "lending."
+        f"{len(stuck)} allocation(s) made during the loan ({sum(b['size'] for b in stuck)} bytes) were still alive when "
+        "it ended, and the GPU had no memory to move them out of the lent tensor: they keep their addresses but no "
+        "longer hold data. Free them before the loan ends, or leave more GPU memory free."
     ]
-    for block in live[:10]:
+    for block in stuck[:10]:
         lines.append(f"  - {block['requested_size']} bytes")
         lines += [f"      {f['filename']}:{f['line']} {f['name']}" for f in block.get("frames", []) if f["filename"].endswith(".py")][:6]
-    if not any(block.get("frames") for block in live):
+    if not any(block.get("frames") for block in stuck):
         lines.append("Call torch.cuda.memory._record_memory_history() before the loan to see where they were allocated.")
     return "\n".join(lines)

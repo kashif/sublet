@@ -1,13 +1,16 @@
 """Allocator settings and workloads inside a loan."""
 
 import gc
+import os
+import subprocess
+import sys
 
 import pytest
 import torch
 import torch.nn as nn
 
 import sublet
-from conftest import MiB, dev, from_cache, make_cache
+from conftest import MiB, ROW, dev, from_cache, gpu_filled, make_cache
 
 
 @pytest.mark.skipif(torch.cuda.get_allocator_backend() == "native", reason="only under backend:cudaMallocAsync")
@@ -16,9 +19,18 @@ def test_non_native_backend_is_refused():
         sublet.empty(64 * MiB, dtype=torch.uint8)
 
 
+def test_expandable_segments_are_refused():
+    code = (
+        "import torch, sublet\nc = sublet.empty(64 * 1024**2, dtype=torch.uint8)\ntry:\n    sublet.lend(c)\n"
+        "except RuntimeError as e:\n    print(e)\n"
+    )
+    env = {**os.environ, "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, env=env)
+    assert "without expandable_segments" in result.stdout, result.stderr[-3000:]
+
+
 def test_per_process_memory_fraction_counts_lent_memory():
     cache, before = make_cache()
-    torch.cuda.empty_cache()
     total = torch.cuda.get_device_properties(dev).total_memory
     torch.cuda.set_per_process_memory_fraction((torch.cuda.memory_reserved() + 256 * MiB) / total)
     try:
@@ -37,28 +49,27 @@ def test_per_process_memory_fraction_counts_lent_memory():
 
 def test_empty_cache_inside_loan():
     cache, before = make_cache()
-    with sublet.lend(cache):
+    with sublet.lend(cache, keep=cache[8:]):
         torch.empty(100 * MiB, dtype=torch.uint8, device=dev).fill_(1)
         torch.cuda.empty_cache()
         b = torch.empty(300 * MiB, dtype=torch.uint8, device=dev).fill_(2)
         assert from_cache(cache, b)
         del b
-    assert torch.equal(cache, before)
+    assert torch.equal(cache[8:], before[8:])
 
 
 def test_leak_report_names_the_allocation_site():
     cache, _ = make_cache(4)
-    kept = []
     torch.cuda.memory._record_memory_history(max_entries=100_000)
     try:
-        with pytest.raises(sublet.LeakError, match="test_workloads.py"):
+        with gpu_filled(8 * MiB), pytest.raises(sublet.LeakError, match="test_workloads.py"):
             with sublet.lend(cache):
-                kept.append(torch.empty(10 * MiB, dtype=torch.uint8, device=dev))
+                kept = torch.empty(3 * ROW, dtype=torch.uint8, device=dev)  # noqa: F841
     finally:
         torch.cuda.memory._record_memory_history(enabled=None)
 
 
-def test_garbage_cycles_are_collected_before_declaring_a_leak():
+def test_garbage_cycles_are_collected_before_giving_up():
     cache, _ = make_cache(4)
 
     class Node:
@@ -66,10 +77,10 @@ def test_garbage_cycles_are_collected_before_declaring_a_leak():
 
     gc.disable()
     try:
-        with sublet.lend(cache):  # no LeakError
+        with gpu_filled(8 * MiB), sublet.lend(cache):  # no room to move it out: no LeakError either
             a, b = Node(), Node()
             a.other, b.other = b, a
-            a.t = torch.empty(10 * MiB, dtype=torch.uint8, device=dev).fill_(1)
+            a.t = torch.empty(3 * ROW, dtype=torch.uint8, device=dev).fill_(1)
             del a, b
     finally:
         gc.enable()
@@ -114,15 +125,14 @@ def test_cuda_graph_capture_and_replay_inside_loan():
             graph.replay()
             out[i].copy_(static_out)
 
-    with sublet.lend(cache):
+    with sublet.lend(cache, keep=[]):  # the borrower, its graph's memory included, takes the tensor's memory first
         borrower()
     for i in range(3):
         torch.testing.assert_close(out[i], ((x * (i + 1)) @ (x * (i + 1))).relu())
-    assert torch.equal(cache, before)
 
 
-def test_cuda_graph_captured_inside_loan_and_kept():
-    cache, before = make_cache(4)
+def test_cuda_graph_captured_inside_loan_and_replayed_after():
+    cache, _ = make_cache(4)
     x, graphs = torch.ones(16, device=dev), []
 
     def borrower():
@@ -132,13 +142,13 @@ def test_cuda_graph_captured_inside_loan_and_kept():
                 x.mul_(2)
         graphs.append(graph)
 
-    # Before torch 2.14 the graph's RNG state is allocated outside its pool and lives as long as the graph: small, it
-    # takes free GPU memory, outside the tensor
-    with sublet.lend(cache):
+    with sublet.lend(cache, keep=[]):  # the graph's memory comes from the tensor, and moves out when the loan ends
         borrower()
+    with gpu_filled(32 * MiB), sublet.lend(cache, keep=[]):  # the next loan writes over the whole tensor
+        torch.empty(cache.numel(), dtype=torch.uint8, device=dev).fill_(1)
     graphs[0].replay()
     torch.cuda.synchronize()
-    assert torch.equal(x, torch.full_like(x, 2.0)) and torch.equal(cache, before)
+    assert torch.equal(x, torch.full_like(x, 2.0))
 
 
 def test_several_tensors_and_loans_in_a_row():

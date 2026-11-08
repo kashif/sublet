@@ -1,15 +1,15 @@
-"""The private PyTorch allocator internals sublet relies on, behind a version check.
+"""What sublet needs from PyTorch, behind a version check.
 
-They change between releases, so sublet refuses torch versions its test suite has not passed on.
-`SUBLET_SKIP_TORCH_CHECK=1` bypasses the check.
+sublet points the cudaMalloc and cudaFree calls of PyTorch's caching allocator (in libc10_cuda.so) at its own, see
+_allocator.c. It refuses PyTorch versions its test suite has not passed on; `SUBLET_SKIP_TORCH_CHECK=1` bypasses the
+check.
 """
 
 import os
 
 import torch
 
-# Before 2.8 a pool's custom allocator only applies on threads with a MemPoolContext: autograd's backward thread bypasses it.
-TESTED = ((2, 8), (2, 15))
+TESTED = ((2, 6), (2, 16))
 
 
 def torch_version():
@@ -29,34 +29,16 @@ def check_supported(device):
         torch.empty(0, device=device)  # creates the device's primary context
 
 
-def pluggable_allocator(path):
-    return torch.cuda.memory.CUDAPluggableAllocator(path, "sublet_malloc", "sublet_free").allocator()
-
-
-def new_pool(allocator, device):
-    with torch.cuda.device(device):
-        return torch.cuda.MemPool(allocator)
-
-
-def route_everything_to(pool, device):
-    # Every thread and stream: torch.cuda.use_mem_pool only routes the calling thread, missing autograd's backward.
-    torch._C._cuda_beginAllocateToPool(device.index, pool.id)
-
-
-def stop_routing(pool, device):
-    torch._C._cuda_endAllocateToPool(device.index, pool.id)
-    torch._C._cuda_releasePool(device.index, pool.id)
+def check_allocator_settings():
+    # With expandable segments, the caching allocator maps memory itself instead of calling cudaMalloc
+    if torch_version() >= (2, 12):
+        settings = torch._C._accelerator_getAllocatorSettings()
+    else:
+        settings = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "") + "," + os.environ.get("PYTORCH_ALLOC_CONF", "")
+    if "expandable_segments:true" in settings.replace(" ", "").lower():
+        raise RuntimeError("sublet needs PyTorch's caching allocator without expandable_segments")
 
 
 def clear_cublas_workspaces():
     # cuBLAS keeps one workspace per (handle, stream) for the life of the process; drop those made during the loan.
     torch._C._cuda_clearCublasWorkspaces()
-
-
-def segments(pool):
-    return pool.snapshot(include_traces=False) if torch_version() >= (2, 11) else pool.snapshot()
-
-
-def live_blocks(pool, in_segment):
-    """Blocks of `pool` still allocated, in the segments whose address satisfies `in_segment`."""
-    return [b for s in segments(pool) if in_segment(s["address"]) for b in s["blocks"] if b["state"] == "active_allocated"]

@@ -1,13 +1,13 @@
 """The README benchmark: a job that needs most of the GPU, while a tensor holding data takes it all.
 
-The tensor takes all free GPU memory but 8 GiB, in rows of 1 GiB; a share of the rows (--data) holds data to keep. The
-job fills one tensor of a given share of that size (--job) with random numbers and sums it. Time per cycle:
+The tensor takes all free GPU memory but 8 GiB, in rows of 1 GiB; a share of the rows (--data), drawn at random, holds
+data to keep. The job fills tensors of 1 GiB, a given share of the tensor's size in all (--job), with random numbers and
+sums them. Time per cycle:
 
 - copy-all: copy the whole tensor to pinned CPU memory, free it, run the job, allocate it again and copy it back.
 - sublet: lend the tensor keeping the data rows.
 
-The first cycle of each is timed apart (it pins CPU memory, and sublet maps the job's memory); later ones are the
-median of --reps.
+The first cycle of each is timed apart (it pins CPU memory); later ones are the median of --reps.
 
     python benchmark.py --data 0.3 --job 0.25 0.75 1.0 --out results.jsonl
 """
@@ -36,8 +36,8 @@ def timed(fn):
 
 
 def job(nbytes):
-    x = torch.empty(nbytes // 4, device=dev).normal_()
-    return x.sum().item()
+    xs = [torch.empty(GiB // 4, device=dev).normal_() for _ in range(nbytes // GiB)]
+    return sum(x.sum() for x in xs).item()
 
 
 def lend_and_run(cache, keep, size):

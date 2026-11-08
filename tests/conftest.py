@@ -1,11 +1,11 @@
 import contextlib
+import gc
 
 import pytest
 import torch
 import torch.nn as nn
 
 import sublet
-from sublet import _compat
 from sublet.lend import _regions
 
 MiB = 1024**2
@@ -22,15 +22,25 @@ def pytest_collection_modifyitems(config, items):
 
 
 def make_cache(rows=16, device=dev):
-    """A lendable tensor of `rows` rows of 64 MiB of random bytes, and a copy of it."""
+    """A lendable tensor of `rows` rows of 64 MiB of random bytes, and a copy of it. PyTorch's cache is emptied before
+    and after, so that the copy gets a segment of its own and the next allocations ask for new memory."""
+    torch.cuda.empty_cache()
     cache = sublet.empty(rows, ROW, dtype=torch.uint8, device=device)
     cache.view(torch.int64).random_()
-    return cache, cache.clone()
+    before = cache.clone()
+    torch.cuda.empty_cache()
+    return cache, before
 
 
 @contextlib.contextmanager
 def gpu_filled(leave):
     """Inside, all free GPU memory but about `leave` bytes is taken."""
+    # CUDA loads a kernel the first time it runs, into GPU memory: load those the tests run, while there is room
+    x = torch.empty(4 * MiB, dtype=torch.uint8, device=dev)
+    x.fill_(1), torch.full_like(x, 2), x.view(torch.int64).random_(), (x == 1).all(), x.clone()
+    del x
+    gc.collect()  # tensors that earlier tests left in garbage cycles
+    torch.cuda.empty_cache()
     blocker = torch.empty(torch.cuda.mem_get_info()[0] - leave, dtype=torch.uint8, device=dev)
     try:
         yield
@@ -41,8 +51,7 @@ def gpu_filled(leave):
 
 def from_cache(cache, t):
     """Whether `t` was allocated from the memory `cache` lends."""
-    pool = _regions[cache.untyped_storage().data_ptr()].pool
-    return any(s["address"] <= t.data_ptr() < s["address"] + s["total_size"] for s in _compat.segments(pool))
+    return _regions[cache.untyped_storage().data_ptr()].backs(t.data_ptr())
 
 
 class Block(nn.Module):

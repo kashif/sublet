@@ -3,4 +3,4 @@
 from .lend import LeakError, Loan, empty, lend
 
 __all__ = ["LeakError", "Loan", "empty", "lend"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
