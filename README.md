@@ -8,9 +8,9 @@ kept memory the borrower actually used went to the CPU and back.
 
 ![GPU memory over time: copying the tensor out and back, or lending it with sublet](assets/lending.svg)
 
-Each column is the GPU memory at one moment. Without sublet, the owner copies its whole tensor to the CPU to make
-room, and back after the job. With sublet, the job takes the tensor's free memory, then free GPU memory, then the
-kept memory it still needs, and only that is copied out and back.
+Each column is the GPU memory at one moment; here the whole tensor holds data to keep. Without sublet, the owner
+copies all of it to the CPU to make room, and back after the job. With sublet, the job takes the free GPU memory,
+then the tensor's memory it still needs, and only that is copied out and back.
 
 ## Install
 
@@ -61,7 +61,7 @@ data back):
 
 Copy all moves the whole tensor out and back; its first cycle also pins that much CPU memory. Until the job needs kept
 rows, sublet copies nothing and a cycle is the job itself; at 100%, it copies the kept rows the job lands on (13 GiB on
-the H100, 43 GiB on the B200), and its first loan pins that much CPU memory. A GiB to the CPU and back takes 0.62 s
+the H100, 43 GiB on the B200), and its first loan pins that much CPU memory. A GiB to the CPU and back takes 0.23 s
 on this H100 node and 0.04 s on the B200.
 
 ## Compatibility
