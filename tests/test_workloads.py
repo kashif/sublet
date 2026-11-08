@@ -8,6 +8,7 @@ import sys
 import pytest
 import torch
 import torch.nn as nn
+from torch.utils._triton import has_triton
 
 import sublet
 from conftest import MiB, ROW, dev, from_cache, gpu_filled, make_cache
@@ -86,6 +87,7 @@ def test_garbage_cycles_are_collected_before_giving_up():
         gc.enable()
 
 
+@pytest.mark.skipif(not has_triton(), reason="needs a working triton")
 def test_torch_compile_inside_loan():
     torch._dynamo.reset()
     cache, before = make_cache()

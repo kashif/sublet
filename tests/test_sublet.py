@@ -182,15 +182,17 @@ def test_side_streams_and_cublas_workspaces():
 
 
 def test_tensor_dropped_before_an_allocation_made_during_its_loan():
-    free_before = torch.cuda.mem_get_info()[0]
     cache, _ = make_cache(4)
+    assert bool((torch.full((1,), 1, dtype=torch.uint8, device=dev) == 1).all())  # loads the kernels the test runs
+    torch.cuda.empty_cache()
+    free_before = torch.cuda.mem_get_info()[0] + cache.numel()
     with sublet.lend(cache, keep=[]):
         survivor = torch.full((10 * MiB,), 1, dtype=torch.uint8, device=dev)
     del cache
     assert bool((survivor == 1).all())
     del survivor
     torch.cuda.empty_cache()  # frees its memory, then the tensor's
-    assert torch.cuda.mem_get_info()[0] >= free_before - 64 * MiB
+    assert torch.cuda.mem_get_info()[0] >= free_before - 16 * MiB
 
 
 def test_cuda_graph_captured_on_the_owners_tensor_stays_valid():

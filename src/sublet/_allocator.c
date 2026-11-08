@@ -255,6 +255,7 @@ int sublet_hook(void) {
 
 static void destroy(Region* r) {
   CUcontext previous = enter(r);
+  cuCtxSynchronize();  // as cudaFree does: kernels may still use the memory
   if (r->nmapped) cuMemUnmap(r->base, r->nmapped * PAGE), cuMemUnmap(r->arena, r->nmapped * PAGE);
   for (int64_t p = 0; p < r->npages && r->pages[p]; p++) cuMemRelease(r->pages[p]);
   if (r->scratch) cuMemRelease(r->scratch);
