@@ -66,10 +66,10 @@ on this H100 node and 0.04 s on the B200.
 
 ## Compatibility
 
-Tested with torch 2.6 to 2.16 on Python 3.10 to 3.13, on T4, A10G, L4, L40S, A100, H100, H200, B200 and RTX PRO 6000,
-on two GPUs for NCCL (A10G, H200, B200), and with `max_split_size_mb`. sublet refuses `expandable_segments` (the caching
-allocator then maps memory itself, without `cudaMalloc`) and `backend:cudaMallocAsync`, and torch versions outside the
-tested range unless `SUBLET_SKIP_TORCH_CHECK=1`.
+Tested with torch 2.6 to 2.16 on Python 3.10 to 3.13 (torch 2.15 has no Python 3.10 build), on T4, A10G, L4, L40S,
+A100, H100, H200, B200 and RTX PRO 6000, on two GPUs for NCCL (A10G, H200, B200), and with `max_split_size_mb`. sublet
+refuses `expandable_segments` (the caching allocator then maps memory itself, without `cudaMalloc`) and
+`backend:cudaMallocAsync`, and torch versions outside the tested range unless `SUBLET_SKIP_TORCH_CHECK=1`.
 
 ## Limitations
 
