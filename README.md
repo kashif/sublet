@@ -75,6 +75,8 @@ refuses `expandable_segments` (the caching allocator then maps memory itself, wi
 
 - An allocation takes one stretch of the tensor's memory: when the tensor's free memory is scattered in stretches
   shorter than an allocation, it takes free GPU memory, or copies kept memory, before it gathers scattered pages.
+- sublet refuses `expandable_segments`, and without it PyTorch's caching allocator can strand free memory inside its
+  segments: a step that needs nearly all of the GPU can run out of memory where it fits with `expandable_segments`.
 - The borrower's allocations still alive when the loan ends need free GPU memory to move to. Without it, the loan ends
   with `LeakError`: the kept data is back all the same, but those allocations no longer hold data.
 - The owner must not use the tensor during a loan, and one loan per device runs at a time.
