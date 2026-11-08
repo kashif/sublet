@@ -76,7 +76,7 @@ def test_each_loan_copies_only_what_it_needs():
     assert torch.equal(cache, before)
 
 
-def test_memory_freed_on_one_stream_serves_another():
+def test_memory_freed_on_one_stream_serves_another(capfd):
     # PyTorch keeps the memory freed on a stream for that stream, until another one runs out of memory
     cache, before = make_cache()
     side = torch.cuda.Stream()
@@ -88,6 +88,17 @@ def test_memory_freed_on_one_stream_serves_another():
                 torch.empty(12 * ROW, dtype=torch.uint8, device=dev).fill_(2)
             torch.cuda.current_stream().wait_stream(side)
     assert loan.copied_bytes == 12 * ROW  # the same pages, copied once
+    assert torch.equal(cache, before)
+    assert "memory allocation failed" not in capfd.readouterr().err  # sublet declined a request: PyTorch warns not
+
+
+def test_memory_pytorch_caches_is_reused_before_kept_memory_is_copied():
+    cache, before = make_cache()  # all of it kept
+    with gpu_filled(32 * MiB):
+        with sublet.lend(cache) as loan:
+            torch.empty(4 * ROW, dtype=torch.uint8, device=dev).fill_(1)  # copied, then cached by PyTorch
+            torch.empty(6 * ROW, dtype=torch.uint8, device=dev).fill_(2)  # longer than the cached block
+    assert loan.copied_bytes == 6 * ROW  # the first allocation's pages again, and 2 rows more
     assert torch.equal(cache, before)
 
 

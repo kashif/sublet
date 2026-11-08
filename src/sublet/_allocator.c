@@ -10,6 +10,8 @@
 //   3. the stretch of the arena with the fewest kept pages, which are copied to pinned CPU memory first;
 //   4. when no stretch is long enough, pages from anywhere in the region, mapped at new addresses (gathered).
 //
+// Before 3 and 4, the request is declined once, so that PyTorch frees the memory it caches and asks again.
+//
 // A kept page is copied once per loan; after that it costs nothing either. When the loan ends, PyTorch gives back its
 // free segments, the segments still holding allocations are moved out of the region (copied to new device memory,
 // mapped at the same addresses), and the kept pages are copied back.
@@ -170,10 +172,11 @@ static int map_pages(Region* r, CUdeviceptr ptr, const int64_t* page, int64_t fi
 
 typedef int (*cuda_malloc_t)(void**, size_t);
 typedef int (*cuda_free_t)(void*);
-typedef int (*cuda_get_device_t)(int*);
+typedef int (*cuda_int_t)(int*);
 static cuda_malloc_t real_malloc;
 static cuda_free_t real_free;
-static cuda_get_device_t real_get_device;
+static cuda_int_t real_get_device, real_exchange_capture_mode;
+static int32_t* log_level;  // c10's FLAGS_caffe2_log_level: PyTorch 2.13+ logs a warning for each failed cudaMalloc
 static int hooked;
 
 int sublet_cuda_malloc(void** ptr, size_t size);
@@ -220,8 +223,14 @@ static int patch_library(struct dl_phdr_info* info, size_t size, void* found) {
   if (!cudart) return 1;
   real_malloc = (cuda_malloc_t)dlsym(cudart, "cudaMalloc");
   real_free = (cuda_free_t)dlsym(cudart, "cudaFree");
-  real_get_device = (cuda_get_device_t)dlsym(cudart, "cudaGetDevice");
-  if (!real_malloc || !real_free || !real_get_device) return 1;
+  real_get_device = (cuda_int_t)dlsym(cudart, "cudaGetDevice");
+  real_exchange_capture_mode = (cuda_int_t)dlsym(cudart, "cudaThreadExchangeStreamCaptureMode");
+  if (!real_malloc || !real_free || !real_get_device || !real_exchange_capture_mode) return 1;
+  for (int i = 0; i < nneeded && !log_level; i++)
+    if (!strcmp(strtab + needed[i], "libc10.so")) {
+      void* c10 = dlopen(strtab + needed[i], RTLD_NOW | RTLD_NOLOAD);
+      if (c10) log_level = (int32_t*)dlsym(c10, "FLAGS_caffe2_log_level");
+    }
   long pagesize = sysconf(_SC_PAGESIZE);
   int rewritten = 0;
   for (int t = 0; t < 2; t++)
@@ -470,8 +479,9 @@ static int gather(Region* r, Segment* s) {
   return 0;
 }
 
-// A segment for size bytes during a loan of r, or NULL if neither r nor the GPU has the memory.
-static Segment* new_segment(Region* r, size_t size) {
+// A segment for size bytes during a loan of r, or NULL if neither r nor the GPU has the memory, or if only kept pages
+// are left and may_copy is 0 (then *would_copy is set).
+static Segment* new_segment(Region* r, size_t size, int may_copy, int* would_copy) {
   Segment* s = calloc(1, sizeof(Segment));
   s->r = r;
   s->npages = (size + PAGE - 1) / PAGE;
@@ -484,8 +494,9 @@ static Segment* new_segment(Region* r, size_t size) {
     r->extra += s->npages * PAGE;
     if (r->extra > r->extra_peak) r->extra_peak = r->extra;
   }
-  if (!ok && fits && (first = cheapest_stretch(r, s->npages)) >= 0) ok = use_stretch(r, s, first) == 0;
-  if (!ok && fits) ok = gather(r, s) == 0;
+  *would_copy = !ok && fits && !may_copy;
+  if (!ok && fits && may_copy && (first = cheapest_stretch(r, s->npages)) >= 0) ok = use_stretch(r, s, first) == 0;
+  if (!ok && fits && may_copy) ok = gather(r, s) == 0;
   if (!ok) {
     free(s->page), free(s);
     return NULL;
@@ -495,16 +506,47 @@ static Segment* new_segment(Region* r, size_t size) {
   return s;
 }
 
+// The thread allocates for a CUDA graph capture: PyTorch switches it to relaxed capture mode for the cudaMalloc, and
+// does not free its cached memory when that fails.
+static int capturing(void) {
+  int mode = 0;  // cudaStreamCaptureModeGlobal
+  real_exchange_capture_mode(&mode);
+  int current = mode;
+  real_exchange_capture_mode(&mode);
+  return current == 2;  // cudaStreamCaptureModeRelaxed
+}
+
+static int declined[MAX_DEVICES];  // the last request on each device was declined rather than copy kept pages
+static int32_t saved_log_level = -1;  // c10's log level while PyTorch reports a declined request
+#define DECLINE_MIN (32ull << 20)  // smaller requests copy right away: a few kept pages cost less than a decline
+
+// PyTorch logs a warning when a cudaMalloc fails, before it frees its cached memory and asks again. A declined request
+// is not a failure: errors only are logged until the next request, or the end of the loan.
+static void quiet_log(void) {
+  if (log_level && saved_log_level < 0) saved_log_level = *log_level, *log_level = 2;  // ERROR
+}
+
+static void restore_log(void) {
+  if (saved_log_level >= 0) *log_level = saved_log_level, saved_log_level = -1;
+}
+
 int sublet_cuda_malloc(void** ptr, size_t size) {
   int device = 0;
   real_get_device(&device);
   pthread_mutex_lock(&mu);
+  restore_log();
   Region* r = device >= 0 && device < MAX_DEVICES ? lender[device] : NULL;
   Segment* s = NULL;
   if (r) {
+    // Before copying kept pages, a large request is declined once: PyTorch then frees the memory it caches (what the
+    // borrower freed, which it may hold on another stream), and asks again, finding free pages where it would have
+    // copied
+    int would_copy = 0;
     CUcontext previous = enter(r);
-    s = new_segment(r, size);
+    s = new_segment(r, size, declined[device] || size < DECLINE_MIN || capturing(), &would_copy);
     cuCtxSetCurrent(previous);
+    declined[device] = would_copy;
+    if (would_copy) quiet_log();
   }
   pthread_mutex_unlock(&mu);
   if (!r) return real_malloc(ptr, size);
@@ -562,12 +604,14 @@ void sublet_begin(Region* r, const uint8_t* keep) {
   r->extra_start = r->extra_peak = r->extra;
   r->moved = r->gathered = 0;
   lender[r->device] = r;
+  declined[r->device] = 0;
   pthread_mutex_unlock(&mu);
 }
 
 // New segments no longer come from r.
 void sublet_stop(Region* r) {
   pthread_mutex_lock(&mu);
+  restore_log();
   if (lender[r->device] == r) lender[r->device] = NULL;
   pthread_mutex_unlock(&mu);
 }

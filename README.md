@@ -44,8 +44,8 @@ nothing back. When the loan spans functions, `loan = sublet.lend(cache, keep=...
 
 During a loan, PyTorch's caching allocator gets the new memory it asks for from sublet, cheapest first: a stretch of
 the tensor that holds nothing to keep, free GPU memory, then the stretch with the least kept data, which is copied to
-the CPU just before. Each kept byte is copied at most once per loan. PyTorch itself reuses what the borrower frees, on
-any stream. When the loan ends, the memory the borrower freed goes back to the tensor, its allocations still alive (an
+the CPU just before. Before it copies, sublet has PyTorch free the memory it caches, as PyTorch does when the GPU runs
+out. Each kept byte is copied at most once per loan. When the loan ends, the memory the borrower freed goes back to the tensor, its allocations still alive (an
 optimizer state made by the first step, a loss kept for logging) are moved out of the tensor's memory, and the kept
 data is copied back.
 
