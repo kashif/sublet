@@ -1,6 +1,7 @@
 import ctypes
 import gc
 import importlib.util
+import sys
 import warnings
 import weakref
 
@@ -154,20 +155,19 @@ class Loan:
         tensor's memory. Does nothing if the loan has ended already.
 
         Raises `LeakError` if the GPU has no room to move some of them: they keep their addresses but lose their data.
+        While an exception is being handled, in an `except` or `finally` block, it warns instead, not to hide it.
         """
         stuck = self._end()
-        if stuck:
+        if stuck and sys.exc_info()[1] is None:
             raise LeakError(_leak_message(stuck))
+        if stuck:
+            warnings.warn(_leak_message(stuck), stacklevel=2)
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        stuck = self._end()
-        if stuck and exc is None:
-            raise LeakError(_leak_message(stuck))
-        if stuck:  # warn rather than hide the exception that ended the loan
-            warnings.warn(_leak_message(stuck), stacklevel=2)
+        self.end()
         return False
 
     def _end(self):

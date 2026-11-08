@@ -136,6 +136,20 @@ def test_an_exception_comes_out_of_the_loan_and_the_kept_memory_comes_back():
     assert torch.equal(cache, before)
 
 
+def test_end_in_a_finally_block_lets_the_exception_through():
+    cache, before = make_cache()
+    with gpu_filled(2 * ROW):
+        with pytest.warns(UserWarning, match="still alive"), pytest.raises(torch.OutOfMemoryError):
+            loan = sublet.lend(cache)
+            try:
+                x = torch.empty(4 * ROW, dtype=torch.uint8, device=dev).fill_(1)  # alive, and too large to move
+                torch.empty(1024**5, dtype=torch.uint8, device=dev)
+            finally:
+                loan.end()
+    del x
+    assert torch.equal(cache, before)
+
+
 def test_end_ends_the_loan_once():
     cache, before = make_cache(4)
     loan = sublet.lend(cache)
